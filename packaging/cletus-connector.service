@@ -1,0 +1,43 @@
+[Unit]
+Description=Cletus inference connector
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/etc/cletus-connector/config.yaml
+
+[Service]
+User=cletus-connector
+Group=cletus-connector
+ExecStart=/usr/bin/cletus-connector run --config /etc/cletus-connector/config.yaml
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=always
+RestartSec=5
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @mount @module @raw-io @reboot @swap @debug @cpu-emulation @obsolete
+ReadWritePaths=/var/log/cletus-connector
+UMask=0077
+IPAddressDeny=any
+
+[Install]
+WantedBy=multi-user.target

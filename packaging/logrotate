@@ -1,0 +1,13 @@
+/var/log/cletus-connector/audit.jsonl {
+    daily
+    rotate 14
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 0640 cletus-connector cletus-connector
+    sharedscripts
+    postrotate
+        systemctl kill --kill-who=main --signal=HUP cletus-connector.service >/dev/null 2>&1 || true
+    endscript
+}

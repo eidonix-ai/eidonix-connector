@@ -1,0 +1,20 @@
+fuzz: elapsed: 0s, gathering baseline coverage: 0/5 completed
+fuzz: elapsed: 0s, gathering baseline coverage: 5/5 completed, now fuzzing with 12 workers
+fuzz: elapsed: 2s, execs: 378859 (180624/sec), new interesting: 33 (total: 38)
+PASS
+ok  	github.com/eidonix/cletus-connector/protocol	2.289s
+fuzz: elapsed: 0s, gathering baseline coverage: 0/36 completed
+fuzz: elapsed: 0s, gathering baseline coverage: 36/36 completed, now fuzzing with 12 workers
+fuzz: elapsed: 2s, execs: 293592 (140310/sec), new interesting: 59 (total: 95)
+PASS
+ok  	github.com/eidonix/cletus-connector/protocol	2.281s
+fuzz: elapsed: 0s, gathering baseline coverage: 0/5 completed
+fuzz: elapsed: 0s, gathering baseline coverage: 5/5 completed, now fuzzing with 12 workers
+fuzz: elapsed: 2s, execs: 360928 (172261/sec), new interesting: 0 (total: 5)
+PASS
+ok  	github.com/eidonix/cletus-connector/protocol	2.215s
+fuzz: elapsed: 0s, gathering baseline coverage: 0/14 completed
+fuzz: elapsed: 0s, gathering baseline coverage: 14/14 completed, now fuzzing with 12 workers
+fuzz: elapsed: 2s, execs: 451811 (218519/sec), new interesting: 33 (total: 47)
+PASS
+ok  	github.com/eidonix/cletus-connector/protocol	2.187s

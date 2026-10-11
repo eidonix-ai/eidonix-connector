@@ -1,0 +1,14 @@
+.git
+/dist
+/dev-state
+/ci/evidence
+*.minisign.key
+*.cosign.key
+
+/docs/SPEC.md
+
+.env
+.env.*
+!.env.example
+*.key
+*.pem

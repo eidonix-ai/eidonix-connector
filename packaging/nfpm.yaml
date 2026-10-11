@@ -1,0 +1,34 @@
+name: cletus-connector
+arch: ${ARCH}
+platform: linux
+mtime: "1970-01-01T00:00:00Z"
+version: ${VERSION}
+maintainer: Eidonix
+homepage: https://github.com/eidonix-ai/cletus-connector
+license: Apache-2.0
+description: Outbound, locally allowlisted inference connector
+section: net
+priority: optional
+depends:
+  - ca-certificates
+  - systemd
+overrides:
+  deb:
+    depends: [ca-certificates, systemd, procps, passwd]
+  rpm:
+    depends: [ca-certificates, systemd, procps-ng, shadow-utils]
+contents:
+  - src: dist/cletus-connector-linux-${ARCH}
+    dst: /usr/bin/cletus-connector
+    file_info: {mode: 0755}
+  - src: packaging/cletus-connector.service
+    dst: /usr/lib/systemd/system/cletus-connector.service
+  - src: examples/config.yaml
+    dst: /usr/share/doc/cletus-connector/config.example.yaml
+  - src: packaging/logrotate
+    dst: /etc/logrotate.d/cletus-connector
+    type: config|noreplace
+  - src: LICENSE
+    dst: /usr/share/doc/cletus-connector/LICENSE
+scripts:
+  postinstall: packaging/postinstall.sh

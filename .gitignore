@@ -1,0 +1,13 @@
+/dist/
+/dev-state/
+*.minisign.key
+*.cosign.key
+
+# Internal source specification; public behavior is documented under docs/.
+/docs/SPEC.md
+
+.env
+.env.*
+!.env.example
+*.key
+*.pem

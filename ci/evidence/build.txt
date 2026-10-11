@@ -1,0 +1,6 @@
+2026-10-11T18:15:44Z
+go version go1.27.2 darwin/arm64
+VERSION=0.1.0-dev ./scripts/build.sh run twice; cmp both connector architectures: PASS
+c9d20518844c55b4003f53ea1ba30201471d9663eabbc8f64ab9f0b3e4859d9d  dist/cletus-connector-linux-amd64
+88b72d28f9bd45bad32044a2b3ed002e908e3c5dc0b14f96a5e2b31a3bc85058  dist/cletus-connector-linux-arm64
+nfpm2.41.3 generated four unsigned deb/rpm; syft1.20.0 generated CycloneDX SBOMs

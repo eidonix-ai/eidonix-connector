@@ -1,0 +1,36 @@
+name: verify
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: '1.27.2'
+      - run: go install github.com/zricethezav/gitleaks/v8@v8.24.2
+      - run: gitleaks git --no-banner --redact
+      - run: go test -race ./...
+      - run: go vet ./...
+      - run: go build ./cmd/cletus-connector ./cmd/test-gateway
+      - run: go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
+      - run: govulncheck ./...
+      - run: VERSION=ci ./scripts/build.sh
+      - run: |
+          cp dist/cletus-connector-linux-amd64 /tmp/first-amd64
+          cp dist/cletus-connector-linux-arm64 /tmp/first-arm64
+          VERSION=ci ./scripts/build.sh
+          cmp /tmp/first-amd64 dist/cletus-connector-linux-amd64
+          cmp /tmp/first-arm64 dist/cletus-connector-linux-arm64
+      - run: go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.41.3
+      - run: VERSION=0.0.0-ci ./scripts/package.sh
+      - run: go install github.com/anchore/syft/cmd/syft@v1.20.0
+      - run: ./scripts/sbom.sh
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: unsigned-test-packages-and-sboms
+          path: dist/
+# Signing is deliberately separate: scripts/sign.sh consumes an operator key.
+# Run scripts/distro-matrix.sh on a controlled Incus VM host before a release.

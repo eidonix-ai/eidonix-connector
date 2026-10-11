@@ -1,0 +1,18 @@
+# Replace the placeholder with the server operator's independently verified Ed25519 key.
+server: https://cletus.eidonix.com
+token_file: /etc/cletus-connector/token
+server_keys:
+  operator-key-id: REPLACE_WITH_VERIFIED_BASE64_ED25519_PUBLIC_KEY
+tls: {ca: system}
+audit_log: /var/log/cletus-connector/audit.jsonl
+health_listen: ""
+routes:
+  - id: chat
+    type: openai_chat
+    flavor: vllm
+    upstreams: [http://192.0.2.20:8000]
+    balance: least_inflight
+    max_concurrency: 32
+    max_request_bytes: 16MiB
+    max_response_bytes: 256MiB
+    idle_timeout: 120s
