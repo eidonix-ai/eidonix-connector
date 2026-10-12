@@ -34,9 +34,10 @@ type Gateway struct {
 	closed                bool
 }
 type peer struct {
-	mux    *yamux.Session
-	routes map[string]protocol.Route
-	slots  chan struct{}
+	mux          *yamux.Session
+	routes       map[string]protocol.Route
+	slots        chan struct{}
+	capabilities map[string]bool
 }
 
 func New(token, keyID string, key ed25519.PrivateKey) (*Gateway, error) {
@@ -162,6 +163,7 @@ func (g *Gateway) connect(w http.ResponseWriter, r *http.Request) {
 	cfg.ConnectionWriteTimeout = 10 * time.Second
 	cfg.AcceptBacklog = 32
 	cfg.LogOutput = io.Discard
+	cfg.StreamCloseTimeout = 0
 	mux, err := yamux.Server(protocol.NewWebSocketConn(ws), cfg)
 	if err != nil {
 		ws.Close()
@@ -184,7 +186,11 @@ func (g *Gateway) connect(w http.ResponseWriter, r *http.Request) {
 	if protocol.ReadJSONLine(br, protocol.MaxControlBytes, &hello) != nil || hello.V != 1 || hello.Type != "hello" || hello.InstanceID != instance || len(hello.Routes) > 128 {
 		return
 	}
-	p := &peer{mux: mux, routes: make(map[string]protocol.Route), slots: make(chan struct{}, 64)}
+	p := &peer{mux: mux, routes: make(map[string]protocol.Route), slots: make(chan struct{}, 64), capabilities: make(map[string]bool)}
+	for _, capability := range hello.Capabilities {
+		p.capabilities[capability] = true
+	}
+	var rejected []protocol.RejectedRoute
 	ids := make([]string, 0, len(hello.Routes))
 	for _, route := range hello.Routes {
 		if route.ID == "" || len(route.ID) > 40 {
@@ -193,11 +199,15 @@ func (g *Gateway) connect(w http.ResponseWriter, r *http.Request) {
 		if _, ok := p.routes[route.ID]; ok {
 			return
 		}
+		if route.Type == "object_storage" && !p.capabilities[protocol.CapabilityStorage] {
+			rejected = append(rejected, protocol.RejectedRoute{ID: route.ID, Reason: "storage_capability_missing"})
+			continue
+		}
 		p.routes[route.ID] = route
 		ids = append(ids, route.ID)
 	}
 	id, _ := protocol.NewInstanceID()
-	if protocol.WriteJSONLine(control, protocol.MaxControlBytes, protocol.Message{V: 1, Type: "hello_ack", SessionID: id, Org: "local-test", AcceptedRoutes: ids, Limits: protocol.Limits{MaxStreams: 64}}) != nil {
+	if protocol.WriteJSONLine(control, protocol.MaxControlBytes, protocol.Message{V: 1, Type: "hello_ack", SessionID: id, Org: "local-test", AcceptedRoutes: ids, RejectedRoutes: rejected, Limits: protocol.Limits{MaxStreams: 64}}) != nil {
 		return
 	}
 	control.SetDeadline(time.Time{})
@@ -256,10 +266,20 @@ func (g *Gateway) connect(w http.ResponseWriter, r *http.Request) {
 	}
 }
 func (g *Gateway) open(ctx context.Context, route, kind string) (net.Conn, func(), error) {
+	id, _ := protocol.NewInstanceID()
+	return g.openHeader(ctx, protocol.StreamHeader{V: 1, Route: route, Kind: kind, RequestID: id})
+}
+func (g *Gateway) openHeader(ctx context.Context, header protocol.StreamHeader) (net.Conn, func(), error) {
 	g.mu.Lock()
 	var chosen *peer
 	for p := range g.sessions {
-		if _, ok := p.routes[route]; ok && !p.mux.IsClosed() {
+		if r, ok := p.routes[header.Route]; ok && !p.mux.IsClosed() {
+			if header.Kind == "storage" && (r.Type != "object_storage" || !p.capabilities[protocol.CapabilityStorage]) {
+				continue
+			}
+			if header.Kind != "storage" && r.Type == "object_storage" {
+				continue
+			}
 			if chosen == nil || len(p.slots) < len(chosen.slots) {
 				chosen = p
 			}
@@ -282,11 +302,10 @@ func (g *Gateway) open(ctx context.Context, route, kind string) (net.Conn, func(
 		return nil, nil, err
 	}
 	c := &idleConn{Conn: s, idle: 120 * time.Second}
-	stop := context.AfterFunc(ctx, func() { s.Close() })
+	stop := context.AfterFunc(ctx, func() { s.SetDeadline(time.Now()); s.Close() })
 	var once sync.Once
 	closeFn := func() { once.Do(func() { stop(); s.Close(); <-chosen.slots }) }
-	id, _ := protocol.NewInstanceID()
-	if err = protocol.WriteStreamHeader(c, protocol.StreamHeader{V: 1, Route: route, Kind: kind, RequestID: id}); err != nil {
+	if err = protocol.WriteStreamHeader(c, header); err != nil {
 		closeFn()
 		return nil, nil, err
 	}
@@ -386,14 +405,42 @@ func (b *body) Close() error { b.closeFn(); return b.ReadCloser.Close() }
 
 type idleConn struct {
 	net.Conn
-	idle time.Duration
-	mu   sync.Mutex
+	idle              time.Duration
+	mu                sync.Mutex
+	readCap, writeCap time.Time
 }
 
+func earliest(a, b time.Time) time.Time {
+	if !b.IsZero() && b.Before(a) {
+		return b
+	}
+	return a
+}
 func (c *idleConn) touch() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.Conn.SetDeadline(time.Now().Add(c.idle))
+	next := time.Now().Add(c.idle)
+	c.Conn.SetReadDeadline(earliest(next, c.readCap))
+	c.Conn.SetWriteDeadline(earliest(next, c.writeCap))
+}
+func (c *idleConn) SetReadDeadline(t time.Time) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.readCap = t
+	return c.Conn.SetReadDeadline(earliest(time.Now().Add(c.idle), t))
+}
+func (c *idleConn) SetWriteDeadline(t time.Time) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.writeCap = t
+	return c.Conn.SetWriteDeadline(earliest(time.Now().Add(c.idle), t))
+}
+func (c *idleConn) SetDeadline(t time.Time) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.readCap = t
+	c.writeCap = t
+	return c.Conn.SetDeadline(earliest(time.Now().Add(c.idle), t))
 }
 func (c *idleConn) Read(b []byte) (int, error) {
 	c.touch()

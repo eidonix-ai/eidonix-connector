@@ -10,4 +10,4 @@ FROM gcr.io/distroless/static:nonroot@sha256:e2e927ec666bae08560abb3c55d0659ecea
 COPY --from=build /connector /usr/bin/cletus-connector
 USER 65532:65532
 ENTRYPOINT ["/usr/bin/cletus-connector"]
-CMD ["run", "--config", "/etc/cletus-connector/config.yaml"]
+CMD ["run", "--config", "/etc/cletus-connector/config.toml"]

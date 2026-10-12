@@ -2,7 +2,13 @@
 
 This directory records development checks, not a signed release or full distro certification.
 
-Completed locally:
+Current storage checks reported complete:
+
+- The full `go test -race ./...` suite passes after connector-side storage integration.
+- `ci/storage-minio.sh` passes against a real TLS MinIO backend: six operations, 0-byte/73-byte/5 MiB + 37-byte objects, ranges, empty SSE-C objects, rejected reads without the SSE-C key, copy/list/delete, explicit probe cleanup, failed small/multipart uploads without partial objects or remaining uploads, preservation of existing objects, prefix confinement, pagination and read/rate budgets.
+- These checks cover the standalone connector. They do not establish production gateway/application integration or Ceph/LocalStack compatibility. Current race, vet, vulnerability, Linux amd64/arm64 build and TLS MinIO results are recorded in `storage-checks.txt`. Container-image and package rebuilds remain pending. The vulnerability scan reports no reachable or imported-package vulnerabilities; its one module-only advisory concerns unused OpenPGP code.
+
+Historical packaging checks (before current storage changes):
 
 - Go 1.27.2 Linux amd64/arm64 builds; two successive builds have identical binary bytes (`build.txt`).
 - Four unsigned deb/rpm packages using nfpm 2.41.3; CycloneDX SBOMs using syft 1.20.0 are in `dist/` (ignored build artifacts).
@@ -25,3 +31,9 @@ For VM certification, run `VERSION=<version> ARCH=amd64 scripts/distro-matrix.sh
 The final package rechecks after the audit-log default fix ran sequentially in disposable containers with a tmpfs-backed chroot (`/work`, `rw,exec,dev`, 1536 MiB). This avoided the Docker VM's full disk without deleting unrelated artifacts. The `dev` flag permits only the four standard device nodes copied into the temporary chroot (`null`, `zero`, `random`, `urandom`); no extra device or privileged-container access was granted. `ci/package-smoke-memory.sh` records the equivalent chroot setup. Final package logs include the installed binary hash, matching `build.txt`.
 
 The initial build and package evidence predates the module move to `github.com/eidonix-ai/cletus-connector`. `publication-checks.txt` records validation of the public module path. Local artifacts in `dist/` retain their original provenance and are not published with the source.
+
+The historical build, package and image logs above must not be interpreted as verification of the current storage implementation. Preserve their provenance when adding new runs.
+
+The Docker MinIO runner accepts `MINIO_TEST_IMAGE`, which must be a reviewed immutable image digest. The local run used the cached default digest in `ci/storage-minio.sh`. Anonymous registry manifest checks returned authorization errors during this work. Set the repository variable `MINIO_TEST_IMAGE` to an accessible reviewed mirror digest to enable the optional storage CI job; it is skipped until configured. The ordinary race suite still runs all recording-backend security tests without Docker.
+
+The public working-tree snapshot was manually checked for customer and infrastructure details and scanned with Gitleaks 8.24.2, including recursive decoding: no leaks found. This is a working-tree scan, not approval to publish historical commits. The initial unpublished commit predates starter-profile sanitization; prepare reviewed, sanitized initial history before the first public push.

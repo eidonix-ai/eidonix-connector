@@ -2,12 +2,12 @@
 Description=Cletus inference connector
 After=network-online.target
 Wants=network-online.target
-ConditionPathExists=/etc/cletus-connector/config.yaml
+ConditionPathExists=/etc/cletus-connector/config.toml
 
 [Service]
 User=cletus-connector
 Group=cletus-connector
-ExecStart=/usr/bin/cletus-connector run --config /etc/cletus-connector/config.yaml
+ExecStart=/usr/bin/cletus-connector run --config /etc/cletus-connector/config.toml
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=always
 RestartSec=5

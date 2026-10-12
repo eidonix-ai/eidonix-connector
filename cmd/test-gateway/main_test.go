@@ -16,7 +16,7 @@ func TestInitializeDevelopmentCredentials(t *testing.T) {
 	if err := initialize(dir, "http://127.0.0.1:8000"); err != nil {
 		t.Fatal(err)
 	}
-	cfg, err := config.Load(filepath.Join(dir, "config.yaml"))
+	cfg, err := config.Load(filepath.Join(dir, "config.toml"))
 	if err != nil {
 		t.Fatal(err)
 	}

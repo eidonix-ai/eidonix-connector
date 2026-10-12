@@ -17,14 +17,24 @@ overrides:
     depends: [ca-certificates, systemd, procps, passwd]
   rpm:
     depends: [ca-certificates, systemd, procps-ng, shadow-utils]
+  apk:
+    depends: [ca-certificates, openrc, logrotate]
 contents:
   - src: dist/cletus-connector-linux-${ARCH}
     dst: /usr/bin/cletus-connector
     file_info: {mode: 0755}
   - src: packaging/cletus-connector.service
     dst: /usr/lib/systemd/system/cletus-connector.service
-  - src: examples/config.yaml
-    dst: /usr/share/doc/cletus-connector/config.example.yaml
+    packager: deb
+  - src: packaging/cletus-connector.service
+    dst: /usr/lib/systemd/system/cletus-connector.service
+    packager: rpm
+  - src: packaging/cletus-connector.openrc
+    dst: /etc/init.d/cletus-connector
+    file_info: {mode: 0755}
+    packager: apk
+  - src: examples/config.toml
+    dst: /usr/share/doc/cletus-connector/config.example.toml
   - src: packaging/logrotate
     dst: /etc/logrotate.d/cletus-connector
     type: config|noreplace

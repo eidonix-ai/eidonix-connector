@@ -1,0 +1,39 @@
+#!/sbin/openrc-run
+# OpenRC service for Alpine and other non-systemd hosts. OpenRC has no
+# equivalent of the systemd unit's sandbox or kernel IP filter: the
+# connector's own dial allowlist still applies, and the kernel-level egress
+# restriction belongs to the host (e.g. the Proxmox firewall on an LXC).
+
+name="cletus-connector"
+description="Cletus inference connector"
+command="/usr/bin/cletus-connector"
+command_args="run --config /etc/cletus-connector/config.toml"
+command_user="cletus-connector:cletus-connector"
+supervisor="supervise-daemon"
+respawn_delay=5
+respawn_max=0
+umask=0077
+required_files="/etc/cletus-connector/config.toml"
+output_logger="logger -t cletus-connector -p daemon.info"
+error_logger="logger -t cletus-connector -p daemon.err"
+extra_started_commands="reload reopen"
+description_reload="Reload local configuration (ends active streams)"
+description_reopen="Reopen the audit log after rotation"
+
+depend() {
+	need net
+	use dns
+	after firewall
+}
+
+reload() {
+	ebegin "Reloading $name"
+	supervise-daemon "$RC_SVCNAME" --signal HUP
+	eend $?
+}
+
+reopen() {
+	ebegin "Reopening $name audit log"
+	supervise-daemon "$RC_SVCNAME" --signal USR1
+	eend $?
+}

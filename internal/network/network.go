@@ -2,12 +2,15 @@
 package network
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"github.com/eidonix-ai/cletus-connector/internal/config"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -155,6 +158,17 @@ func Systemd(ctx context.Context, c *config.Config) (string, error) {
 	}
 	for _, r := range c.Routes {
 		origins = append(origins, r.Upstreams...)
+		if r.Type == "object_storage" {
+			origins = append(origins, r.Endpoint)
+			if !r.PathStyle {
+				u, err := url.Parse(r.Endpoint)
+				if err != nil {
+					return "", err
+				}
+				u.Host = r.Bucket + "." + u.Host
+				origins = append(origins, u.String())
+			}
+		}
 	}
 	p, e := New(ctx, origins, nil)
 	if e != nil {
@@ -168,5 +182,44 @@ func Systemd(ctx context.Context, c *config.Config) (string, error) {
 			lines = append(lines, "IPAddressAllow="+ip)
 		}
 	}
+	f, err := os.Open("/etc/resolv.conf")
+	if err != nil {
+		return "", fmt.Errorf("read DNS resolver policy: %w", err)
+	}
+	defer f.Close()
+	resolvers, err := resolverAddresses(f)
+	if err != nil {
+		return "", err
+	}
+	lines = append(lines, "# DNS resolvers below are not enabled automatically. Review and uncomment remote resolver IPs before starting the service.")
+	for _, ip := range resolvers {
+		if !net.ParseIP(ip).IsLoopback() {
+			lines = append(lines, "# IPAddressAllow="+ip)
+		}
+	}
 	return strings.Join(lines, "\n") + "\n", nil
+}
+
+func resolverAddresses(r io.Reader) ([]string, error) {
+	scanner := bufio.NewScanner(io.LimitReader(r, 65537))
+	seen := map[string]bool{}
+	for scanner.Scan() {
+		fields := strings.Fields(strings.Split(scanner.Text(), "#")[0])
+		if len(fields) == 0 || fields[0] != "nameserver" {
+			continue
+		}
+		if len(fields) < 2 || net.ParseIP(fields[1]) == nil {
+			return nil, fmt.Errorf("invalid nameserver in resolv.conf; review DNS configuration")
+		}
+		seen[net.ParseIP(fields[1]).String()] = true
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(seen))
+	for ip := range seen {
+		out = append(out, ip)
+	}
+	sort.Strings(out)
+	return out, nil
 }

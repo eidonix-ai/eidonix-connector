@@ -235,8 +235,11 @@ func TestAdversarialSilentResponseHitsIdle(t *testing.T) {
 	if resp != nil {
 		resp.Body.Close()
 	}
-	if e == nil {
-		t.Fatal("silent upstream returned response")
+	if e != nil {
+		t.Fatal(e)
+	}
+	if resp.StatusCode != 504 || resp.Header.Get("X-Cletus-Connector-Error") != "upstream_timeout" {
+		t.Fatalf("idle response:%d %v", resp.StatusCode, resp.Header)
 	}
 	if time.Since(started) > 700*time.Millisecond {
 		t.Fatal("idle timeout not enforced")

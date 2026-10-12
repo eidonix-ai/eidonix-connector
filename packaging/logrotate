@@ -8,6 +8,10 @@
     create 0640 cletus-connector cletus-connector
     sharedscripts
     postrotate
-        systemctl kill --kill-who=main --signal=HUP cletus-connector.service >/dev/null 2>&1 || true
+        if command -v systemctl >/dev/null 2>&1; then
+            systemctl kill --kill-who=main --signal=USR1 cletus-connector.service
+        else
+            rc-service --ifstarted cletus-connector reopen
+        fi >/dev/null 2>&1 || true
     endscript
 }

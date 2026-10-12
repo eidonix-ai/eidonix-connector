@@ -15,7 +15,7 @@ import (
 
 func TestGoldenHeader(t *testing.T) {
 	var b bytes.Buffer
-	err := WriteStreamHeader(&b, StreamHeader{1, "chat", "http", "r1"})
+	err := WriteStreamHeader(&b, StreamHeader{V: 1, Route: "chat", Kind: "http", RequestID: "r1"})
 	if err != nil {
 		t.Fatal(err)
 	}

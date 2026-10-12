@@ -9,5 +9,5 @@ rendered=$(mktemp)
 trap 'rm -f "$rendered"' EXIT HUP INT TERM
 for ARCH in amd64 arm64; do
   sed 's/${ARCH}/'"$ARCH"'/g; s/${VERSION}/'"$VERSION"'/g' packaging/nfpm.yaml > "$rendered"
-  for format in deb rpm; do nfpm package --config "$rendered" --packager "$format" --target "dist/cletus-connector_${VERSION}_${ARCH}.$format"; done
+  for format in deb rpm apk; do nfpm package --config "$rendered" --packager "$format" --target "dist/cletus-connector_${VERSION}_${ARCH}.$format"; done
 done

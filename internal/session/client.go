@@ -40,6 +40,9 @@ type Options struct {
 	Proxy                  func(*http.Request) (*url.URL, error)
 }
 
+var processInstance = sync.OnceValues(protocol.NewInstanceID)
+var processStarted = time.Now()
+
 func RunOptions(ctx context.Context, o Options, h Handler) error {
 	u, e := url.Parse(o.Server)
 	if e != nil || u.Scheme != "https" || u.Hostname() == "" || (u.Port() != "" && u.Port() != "443") || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") {
@@ -52,7 +55,7 @@ func RunOptions(ctx context.Context, o Options, h Handler) error {
 	if len(o.Keys) == 0 {
 		return errors.New("no pinned server keys")
 	}
-	instance, e := protocol.NewInstanceID()
+	instance, e := processInstance()
 	if e != nil {
 		return e
 	}
@@ -61,7 +64,7 @@ func RunOptions(ctx context.Context, o Options, h Handler) error {
 	if o.MaxStreams <= 0 {
 		o.MaxStreams = 128
 	}
-	o.started = time.Now()
+	o.started = processStarted
 	delay := time.Second
 	for ctx.Err() == nil {
 		started := time.Now()
@@ -124,6 +127,7 @@ func connect(ctx context.Context, endpoint, id, instance string, o Options, h Ha
 	yc.ConnectionWriteTimeout = 10 * time.Second
 	yc.AcceptBacklog = o.MaxStreams
 	yc.LogOutput = io.Discard
+	yc.StreamCloseTimeout = 0
 	mux, e := yamux.Client(protocol.NewWebSocketConn(ws), yc)
 	if e != nil {
 		return e
@@ -146,7 +150,7 @@ func connect(ctx context.Context, endpoint, id, instance string, o Options, h Ha
 	}
 	defer control.Close()
 	control.SetDeadline(time.Now().Add(10 * time.Second))
-	if e = protocol.WriteJSONLine(control, protocol.MaxControlBytes, protocol.Message{V: 1, Type: "hello", InstanceID: instance, Version: o.Version, OS: runtime.GOOS, Arch: runtime.GOARCH, Routes: h.HelloRoutes()}); e != nil {
+	if e = protocol.WriteJSONLine(control, protocol.MaxControlBytes, protocol.Message{V: 1, Type: "hello", InstanceID: instance, Version: o.Version, OS: runtime.GOOS, Arch: runtime.GOARCH, Capabilities: []string{protocol.CapabilityInference, protocol.CapabilityStorage}, Routes: h.HelloRoutes()}); e != nil {
 		return e
 	}
 	reader := bufio.NewReader(control)

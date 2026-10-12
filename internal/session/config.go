@@ -21,9 +21,11 @@ import (
 )
 
 func prepare(ctx context.Context, cfg *config.Config, version string) (Options, error) {
-	if err := cfg.Validate(); err != nil {
+	normalized, err := cfg.Normalized()
+	if err != nil {
 		return Options{}, err
 	}
+	cfg = normalized
 	token, e := readToken(cfg.TokenFile)
 	if e != nil {
 		return Options{}, e

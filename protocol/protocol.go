@@ -18,13 +18,14 @@ const (
 )
 
 type Route struct {
-	ID             string      `json:"id"`
-	Type           string      `json:"type"`
-	MethodsPaths   [][2]string `json:"methods_paths"`
-	WebsocketPaths []string    `json:"websocket_paths,omitempty"`
-	MaxConcurrency int         `json:"max_concurrency"`
-	Healthy        bool        `json:"healthy"`
-	Models         []string    `json:"models,omitempty"`
+	ID             string        `json:"id"`
+	Type           string        `json:"type"`
+	MethodsPaths   [][2]string   `json:"methods_paths"`
+	WebsocketPaths []string      `json:"websocket_paths,omitempty"`
+	MaxConcurrency int           `json:"max_concurrency"`
+	Healthy        bool          `json:"healthy"`
+	Models         []string      `json:"models,omitempty"`
+	Storage        *StorageRoute `json:"storage,omitempty"`
 }
 type RouteStatus struct {
 	ID       string   `json:"id"`
@@ -54,6 +55,7 @@ type Message struct {
 	RejectedRoutes []RejectedRoute `json:"rejected_routes,omitempty"`
 	Limits         Limits          `json:"limits,omitempty"`
 	Reason         string          `json:"reason,omitempty"`
+	Capabilities   []string        `json:"capabilities,omitempty"`
 }
 
 // StatusMessage uses the status-specific route shape.
@@ -64,10 +66,22 @@ type StatusMessage struct {
 	UptimeS int64         `json:"uptime_s"`
 }
 type StreamHeader struct {
-	V         int    `json:"v"`
-	Route     string `json:"route"`
-	Kind      string `json:"kind"`
-	RequestID string `json:"request_id"`
+	V           int     `json:"v"`
+	Route       string  `json:"route"`
+	Kind        string  `json:"kind"`
+	RequestID   string  `json:"request_id"`
+	Op          string  `json:"op,omitempty"`
+	Key         string  `json:"key,omitempty"`
+	SrcKey      string  `json:"src_key,omitempty"`
+	DstKey      string  `json:"dst_key,omitempty"`
+	Prefix      string  `json:"prefix,omitempty"`
+	Token       string  `json:"token,omitempty"`
+	Size        *int64  `json:"size,omitempty"`
+	ContentType string  `json:"content_type,omitempty"`
+	Range       []int64 `json:"range,omitempty"`
+	IfMatch     string  `json:"if_match,omitempty"`
+	Recursive   bool    `json:"recursive,omitempty"`
+	Max         int     `json:"max,omitempty"`
 }
 
 func ReadJSONLine(r *bufio.Reader, max int, out any) error {
@@ -104,7 +118,7 @@ func WriteJSONLine(w io.Writer, max int, value any) error {
 func ReadStreamHeader(r *bufio.Reader) (StreamHeader, error) {
 	var h StreamHeader
 	err := ReadJSONLine(r, MaxHeaderBytes, &h)
-	if err == nil && (h.V != Version || h.Route == "" || (h.Kind != "http" && h.Kind != "websocket")) {
+	if err == nil && (h.V != Version || h.Route == "" || h.Kind == "") {
 		err = errors.New("invalid stream header")
 	}
 	return h, err

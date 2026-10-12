@@ -20,8 +20,9 @@ chmod 0755 /tmp/test-gateway
 chgrp cletus-connector /etc/cletus-connector/dev-test /etc/cletus-connector/dev-test/token /etc/cletus-connector/dev-test/tls.pem
 chmod 0750 /etc/cletus-connector/dev-test
 chmod 0640 /etc/cletus-connector/dev-test/token /etc/cletus-connector/dev-test/tls.pem
-sed 's|^audit_log:.*|audit_log: /var/log/cletus-connector/audit.jsonl|' /etc/cletus-connector/dev-test/config.yaml > /etc/cletus-connector/config.yaml
-chown root:cletus-connector /etc/cletus-connector/config.yaml
+sed 's|^audit_log = .*|audit_log = "/var/log/cletus-connector/audit.jsonl"|' /etc/cletus-connector/dev-test/config.toml > /etc/cletus-connector/config.toml
+chown root:cletus-connector /etc/cletus-connector/config.toml
+chmod 0640 /etc/cletus-connector/config.toml
 mkdir -p /etc/systemd/system/cletus-connector.service.d
 cletus-connector print-systemd-network > /etc/systemd/system/cletus-connector.service.d/network.conf
 /tmp/test-gateway --state /etc/cletus-connector/dev-test >/tmp/gateway.log 2>&1 &

@@ -16,7 +16,7 @@ func TestPinnedDestinations(t *testing.T) {
 			t.Fatalf("dial allowed %s", addr)
 		}
 	}
-	if _, e = New(context.Background(), []string{"http://127.0.0.1:9000"}, []string{"10.0.0.0/8"}); e == nil {
+	if _, e = New(context.Background(), []string{"http://127.0.0.1:9000"}, []string{"192.0.2.0/24"}); e == nil {
 		t.Fatal("CIDR restriction bypassed")
 	}
 }
@@ -27,15 +27,15 @@ func TestDNSRebindingCannotExpandPins(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	for _, answers := range [][]net.IPAddr{{{IP: net.ParseIP("10.0.0.77")}}, nil, {{IP: net.ParseIP("127.0.0.1"), Zone: "eth0"}}, {{IP: net.IP{1, 2}}}} {
+	for _, answers := range [][]net.IPAddr{{{IP: net.ParseIP("192.0.2.77")}}, nil, {{IP: net.ParseIP("127.0.0.1"), Zone: "eth0"}}, {{IP: net.IP{1, 2}}}} {
 		p.lookup = func(context.Context, string) ([]net.IPAddr, error) { return answers, nil }
 		if p.Refresh(ctx) == nil {
 			t.Fatalf("refresh accepted unsafe answers %v", answers)
 		}
-		if len(p.allowed) != 1 || !p.allowed["127.0.0.1:9000"] || p.allowed["10.0.0.77:9000"] {
+		if len(p.allowed) != 1 || !p.allowed["127.0.0.1:9000"] || p.allowed["192.0.2.77:9000"] {
 			t.Fatal("refresh widened immutable pins")
 		}
-		if _, e := p.DialContext(ctx, "tcp", "10.0.0.77:9000"); e == nil {
+		if _, e := p.DialContext(ctx, "tcp", "192.0.2.77:9000"); e == nil {
 			t.Fatal("rebound destination dialed")
 		}
 	}

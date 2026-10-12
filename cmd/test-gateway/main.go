@@ -2,6 +2,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -24,6 +25,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/eidonix-ai/cletus-connector/internal/config"
 	"github.com/eidonix-ai/cletus-connector/internal/testgateway"
 )
 
@@ -108,13 +110,16 @@ func initialize(dir, upstream string) error {
 		return err
 	}
 	token := "cxn_" + strings.ToLower(base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(id)) + "_" + base64.RawURLEncoding.EncodeToString(secret)
-	cfg := fmt.Sprintf("server: https://127.0.0.1\ntoken_file: %q\nserver_keys:\n  local-dev: %q\ntls:\n  ca: file\n  ca_file: %q\naudit_log: %q\nroutes:\n  - id: chat\n    type: openai_chat\n    upstreams: [%q]\n", filepath.Join(dir, "token"), base64.StdEncoding.EncodeToString(pub), filepath.Join(dir, "tls.pem"), filepath.Join(dir, "audit.jsonl"), upstream)
-	files := map[string][]byte{"identity.key": key, "tls.key": pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}), "tls.pem": pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert}), "token": []byte(token + "\n"), "config.yaml": []byte(cfg)}
+	var cfg bytes.Buffer
+	if err = config.Encode(&cfg, &config.Config{Server: "https://127.0.0.1", TokenFile: filepath.Join(dir, "token"), ServerKeys: map[string]string{"local-dev": base64.StdEncoding.EncodeToString(pub)}, TLS: config.TLS{CA: "file", CAFile: filepath.Join(dir, "tls.pem")}, AuditLog: filepath.Join(dir, "audit.jsonl"), Routes: []config.Route{{ID: "chat", Type: "openai_chat", Upstreams: []string{upstream}}}}); err != nil {
+		return err
+	}
+	files := map[string][]byte{"identity.key": key, "tls.key": pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}), "tls.pem": pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert}), "token": []byte(token + "\n"), "config.toml": cfg.Bytes()}
 	for name, data := range files {
 		if err = os.WriteFile(filepath.Join(dir, name), data, 0600); err != nil {
 			return err
 		}
 	}
-	fmt.Printf("Development keys and config created in %s\nRun test-gateway --state %q, then cletus-connector run --config %q\n", dir, dir, filepath.Join(dir, "config.yaml"))
+	fmt.Printf("Development keys and config created in %s\nRun test-gateway --state %q, then cletus-connector run --config %q\n", dir, dir, filepath.Join(dir, "config.toml"))
 	return nil
 }
