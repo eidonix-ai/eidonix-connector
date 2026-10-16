@@ -6,17 +6,16 @@ version: ${VERSION}
 maintainer: Eidonix
 homepage: https://github.com/eidonix-ai/eidonix-connector
 license: Apache-2.0
-description: Outbound, locally allowlisted inference connector
+description: Outbound-only connector that shares exactly the services its configuration file names
 section: net
 priority: optional
 depends:
   - ca-certificates
-  - systemd
 overrides:
   deb:
-    depends: [ca-certificates, systemd, procps, passwd]
+    depends: [ca-certificates, procps, passwd]
   rpm:
-    depends: [ca-certificates, systemd, procps-ng, shadow-utils]
+    depends: [ca-certificates, procps-ng, shadow-utils]
   apk:
     depends: [ca-certificates, openrc, logrotate]
 contents:
@@ -33,12 +32,20 @@ contents:
     dst: /etc/init.d/eidonix-connector
     file_info: {mode: 0755}
     packager: apk
-  - src: examples/config.toml
-    dst: /usr/share/doc/eidonix-connector/config.example.toml
+  # The blank template; the owner fills it in. Never replaced on upgrade.
+  - src: examples/connector.yaml
+    dst: /etc/eidonix-connector/connector.yaml
+    type: config|noreplace
+    file_info: {mode: 0640, owner: root, group: eidonix-connector}
+  - src: examples/connector.yaml
+    dst: /usr/share/doc/eidonix-connector/connector.yaml
+  - src: examples/gpu-server.yaml
+    dst: /usr/share/doc/eidonix-connector/gpu-server.yaml
   - src: packaging/logrotate
     dst: /etc/logrotate.d/eidonix-connector
     type: config|noreplace
   - src: LICENSE
     dst: /usr/share/doc/eidonix-connector/LICENSE
 scripts:
+  preinstall: packaging/preinstall.sh
   postinstall: packaging/postinstall.sh

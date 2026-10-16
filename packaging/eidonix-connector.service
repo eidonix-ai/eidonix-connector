@@ -1,13 +1,14 @@
 [Unit]
 Description=Eidonix connector
+Documentation=https://github.com/eidonix-ai/eidonix-connector
 After=network-online.target
 Wants=network-online.target
-ConditionPathExists=/etc/eidonix-connector/config.toml
+ConditionPathExists=/etc/eidonix-connector/connector.yaml
 
 [Service]
 User=eidonix-connector
 Group=eidonix-connector
-ExecStart=/usr/bin/eidonix-connector run --config /etc/eidonix-connector/config.toml
+ExecStart=/usr/bin/eidonix-connector run --config /etc/eidonix-connector/connector.yaml
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=always
 RestartSec=5
@@ -37,7 +38,9 @@ SystemCallFilter=@system-service
 SystemCallFilter=~@privileged @resources @mount @module @raw-io @reboot @swap @debug @cpu-emulation @obsolete
 ReadWritePaths=/var/log/eidonix-connector
 UMask=0077
-IPAddressDeny=any
+# Where the connector may connect is enforced in the process from the
+# configuration file (upstream, proxy and each service's address); there is
+# no separate network policy file to keep in step.
 
 [Install]
 WantedBy=multi-user.target

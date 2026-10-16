@@ -1,0 +1,49 @@
+# Package smoke runs, eidonix-connector 0.2.0 arm64 packages built by `make` from feat/v0.2
+# (the packaging commit's tree), installed in disposable Docker containers on an arm64 Mac.
+# Package-manager download noise removed. RPM and amd64 installs: NOT RUN (no image cached offline).
+
+## Debian bookworm-slim arm64 (ci/package-smoke.sh)
+2026-10-16T12:56:08Z
+PRETTY_NAME="Debian GNU/Linux 12 (bookworm)"
+NAME="Debian GNU/Linux"
+VERSION_ID="12"
+VERSION="12 (bookworm)"
+VERSION_CODENAME=bookworm
+ID=debian
+HOME_URL="https://www.debian.org/"
+SUPPORT_URL="https://www.debian.org/support"
+BUG_REPORT_URL="https://bugs.debian.org/"
+Reading package lists...
+Building dependency tree...
+eidonix-connector:x:999:999::/nonexistent:/usr/sbin/nologin
+eidonix-connector:x:999:
+750 root eidonix-connector /etc/eidonix-connector
+640 root eidonix-connector /etc/eidonix-connector/connector.yaml
+750 eidonix-connector eidonix-connector /var/log/eidonix-connector
+0.2.0
+0e0eeaea24fd91dba27d913e710ec72b46bfcc5646e1e19025bef7ca492891cf  /usr/bin/eidonix-connector
+refusing to run as root; use the eidonix-connector service account (diagnostics: --allow-root)
+PASS package installation/user/config ownership/root refusal/template refused/no enable symlink
+NOT RUN real systemd runtime, capabilities/listeners under running service
+
+## Alpine latest arm64 (ci/package-smoke-alpine.sh)
+2026-10-16T12:59:29Z
+NAME="Alpine Linux"
+ID=alpine
+VERSION_ID=3.24.2
+PRETTY_NAME="Alpine Linux v3.24"
+HOME_URL="https://alpinelinux.org/"
+BUG_REPORT_URL="https://gitlab.alpinelinux.org/alpine/aports/-/issues"
+  Executing openrc-0.63.2-r0.post-install
+  Executing eidonix-connector-0.2.0.pre-install
+  Executing eidonix-connector-0.2.0.post-install
+eidonix-connector:x:100:101::/nonexistent:/sbin/nologin
+750 root:eidonix-connector /etc/eidonix-connector
+640 root:eidonix-connector /etc/eidonix-connector/connector.yaml
+750 eidonix-connector:eidonix-connector /var/log/eidonix-connector
+0.2.0
+0e0eeaea24fd91dba27d913e710ec72b46bfcc5646e1e19025bef7ca492891cf  /usr/bin/eidonix-connector
+/etc/eidonix-connector/connector.yaml: line 7: upstream: token is not a connection token (cxn_…); paste the token shown in Eidonix Setup
+config /etc/eidonix-connector/connector.yaml has mode 0644; it holds secrets, so other users must have no access and its group no write. Fix: chown root:eidonix-connector /etc/eidonix-connector/connector.yaml && chmod 0640 /etc/eidonix-connector/connector.yaml
+PASS apk installation/user/config ownership/root refusal/template refused/permission gate
+NOT RUN OpenRC runtime

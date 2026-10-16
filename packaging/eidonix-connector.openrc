@@ -1,29 +1,36 @@
 #!/sbin/openrc-run
-# OpenRC service for Alpine and other non-systemd hosts. OpenRC has no
-# equivalent of the systemd unit's sandbox or kernel IP filter: the
-# connector's own dial allowlist still applies, and the kernel-level egress
-# restriction belongs to the host (e.g. the Proxmox firewall on an LXC).
+# OpenRC service for Alpine and other non-systemd hosts. Where the connector
+# may connect is enforced in the process from the configuration file
+# (upstream, proxy and each service's address), the same as under systemd.
 
 name="eidonix-connector"
 description="Eidonix connector"
 command="/usr/bin/eidonix-connector"
-command_args="run --config /etc/eidonix-connector/config.toml"
+command_args="run --config /etc/eidonix-connector/connector.yaml"
 command_user="eidonix-connector:eidonix-connector"
 supervisor="supervise-daemon"
 respawn_delay=5
 respawn_max=0
 umask=0077
-required_files="/etc/eidonix-connector/config.toml"
+required_files="/etc/eidonix-connector/connector.yaml"
 output_logger="logger -t eidonix-connector -p daemon.info"
 error_logger="logger -t eidonix-connector -p daemon.err"
+extra_commands="checkconfig"
 extra_started_commands="reload reopen"
-description_reload="Reload local configuration (ends active streams)"
-description_reopen="Reopen the audit log after rotation"
+description_checkconfig="Check the configuration and explain what it shares"
+description_reload="Reload the configuration (ends active streams)"
+description_reopen="Reopen the access log after rotation"
 
 depend() {
 	need net
 	use dns
 	after firewall
+}
+
+checkconfig() {
+	ebegin "Checking $name configuration"
+	su -s /bin/sh eidonix-connector -c "$command check --config /etc/eidonix-connector/connector.yaml" >/dev/null
+	eend $?
 }
 
 reload() {
@@ -33,7 +40,7 @@ reload() {
 }
 
 reopen() {
-	ebegin "Reopening $name audit log"
+	ebegin "Reopening $name access log"
 	supervise-daemon "$RC_SVCNAME" --signal USR1
 	eend $?
 }

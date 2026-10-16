@@ -1,4 +1,4 @@
-name: verify
+name: eidonix-connector
 on: [push, pull_request, workflow_dispatch]
 permissions:
   contents: read
