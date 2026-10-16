@@ -303,7 +303,10 @@ func TestPerServiceBusy(t *testing.T) {
 	s := f.start(t)
 	x := newConnector(t, testConfig(t, "chat:\n  - name: one\n    url: %s\n    models: any\n    max_concurrent_requests: 1\n  - name: two\n    url: %[1]s\n    models: any\n", s.URL))
 	done := make(chan struct{})
-	go func() { defer close(done); exchange(t, x, "one", post("/v1/chat/completions", "application/json", `{}`)) }()
+	go func() {
+		defer close(done)
+		exchange(t, x, "one", post("/v1/chat/completions", "application/json", `{}`))
+	}()
 	deadline := time.Now().Add(2 * time.Second)
 	for f.hits.Load() == 0 && time.Now().Before(deadline) {
 		time.Sleep(5 * time.Millisecond)

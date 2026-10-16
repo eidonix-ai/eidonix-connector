@@ -4,6 +4,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"errors"
 	"flag"
 	"fmt"
@@ -11,16 +13,27 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
+	"time"
 
 	"github.com/eidonix-ai/eidonix-connector/internal/config"
 	"github.com/eidonix-ai/eidonix-connector/internal/connector"
+	"github.com/eidonix-ai/eidonix-connector/internal/convert"
 	"github.com/eidonix-ai/eidonix-connector/internal/session"
+	"github.com/eidonix-ai/eidonix-connector/internal/storage"
 )
 
 var version = "0.2.0"
 
-const usage = "usage: eidonix-connector run|check|version [--config PATH]"
+const usage = `usage:
+  eidonix-connector run [--config PATH]                          connect and share the configured services
+  eidonix-connector check [--config PATH] [--redacted] [--write-probe]
+                                                                 explain the configuration (--redacted: print it with secrets hidden)
+  eidonix-connector init [PATH]                                  write a blank configuration (stdout without PATH)
+  eidonix-connector generate-key                                 print a new storage encryption_key
+  eidonix-connector convert OLD.toml                             convert a v0.1 configuration (YAML to stdout, review list to stderr)
+  eidonix-connector version`
 
 func main() {
 	if err := execute(os.Args[1:], os.Stdout, os.Stderr, os.Geteuid()); err != nil {
@@ -37,11 +50,18 @@ func execute(args []string, out, errOut io.Writer, uid int) error {
 	fs.SetOutput(errOut)
 	path := fs.String("config", config.DefaultPath, "configuration file")
 	allowRoot := fs.Bool("allow-root", false, "allow running as root (diagnostics only)")
+	redacted := fs.Bool("redacted", false, "check: print the file with every secret replaced")
+	writeProbe := fs.Bool("write-probe", false, "check: also write, read and delete a temporary storage object")
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
-	if fs.NArg() != 0 {
-		return errors.New("unexpected arguments; " + usage)
+	rest := fs.Args()
+	maxArgs := map[string]int{"init": 1, "convert": 1}[command]
+	if len(rest) > maxArgs || command == "convert" && len(rest) != 1 {
+		return errors.New("unexpected arguments\n" + usage)
+	}
+	if (*redacted || *writeProbe) && command != "check" {
+		return errors.New("--redacted and --write-probe apply to check only")
 	}
 	switch command {
 	case "version":
@@ -57,13 +77,116 @@ func execute(args []string, out, errOut io.Writer, uid int) error {
 		}
 		return run(*path, cfg, errOut)
 	case "check":
-		if _, err := config.Load(*path); err != nil {
+		return check(*path, *redacted, *writeProbe, out)
+	case "init":
+		if len(rest) == 0 {
+			_, err := io.WriteString(out, config.Template)
 			return err
 		}
-		fmt.Fprintln(out, "configuration ok")
+		f, err := os.OpenFile(rest[0], os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0640)
+		if err != nil {
+			if errors.Is(err, os.ErrExist) {
+				return fmt.Errorf("%s already exists; init never overwrites a configuration", rest[0])
+			}
+			return err
+		}
+		if _, err = io.WriteString(f, config.Template); err != nil {
+			f.Close()
+			return err
+		}
+		if err = f.Close(); err != nil {
+			return err
+		}
+		fmt.Fprintf(errOut, "wrote %s; paste the token and public key from Eidonix Setup, add your services, then run eidonix-connector check --config %s\n", rest[0], rest[0])
+		return nil
+	case "generate-key":
+		key := make([]byte, 32)
+		if _, err := rand.Read(key); err != nil {
+			return err
+		}
+		fmt.Fprintln(out, base64.StdEncoding.EncodeToString(key))
+		return nil
+	case "convert":
+		yaml, notes, err := convert.Convert(rest[0])
+		if err != nil {
+			return err
+		}
+		if _, err = out.Write(yaml); err != nil {
+			return err
+		}
+		if len(notes) > 0 {
+			fmt.Fprintln(errOut, "Review before use:")
+			for _, n := range notes {
+				fmt.Fprintln(errOut, "  - "+n)
+			}
+		}
 		return nil
 	}
-	return fmt.Errorf("unknown command %q; %s", command, usage)
+	return fmt.Errorf("unknown command %q\n%s", command, usage)
+}
+
+// check validates the file (permission gate included) and explains it, then
+// runs the read-only storage checks. With redacted it prints the file itself,
+// secrets hidden, for an auditor or a support ticket.
+func check(path string, redacted, writeProbe bool, out io.Writer) error {
+	data, _, err := config.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	if redacted {
+		safe, err := config.Redact(data)
+		if err != nil {
+			return err
+		}
+		if _, err = out.Write(safe); err != nil {
+			return err
+		}
+		_, err = config.Load(path)
+		return err
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		return err
+	}
+	if _, err = io.WriteString(out, cfg.Describe()); err != nil {
+		return err
+	}
+	var failed error
+	for _, svc := range cfg.Services {
+		if svc.Storage == nil {
+			continue
+		}
+		if err := checkStorage(svc, writeProbe, out); err != nil && failed == nil {
+			failed = err
+		}
+	}
+	return failed
+}
+
+func checkStorage(svc config.Service, writeProbe bool, out io.Writer) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	h, err := storage.New(ctx, svc, nil)
+	if err != nil {
+		fmt.Fprintf(out, "Storage %s: cannot start: %v\n", svc.Name, err)
+		return err
+	}
+	defer h.Close()
+	checks, err := h.Check(ctx, writeProbe)
+	for _, c := range checks {
+		state := "ok"
+		if !c.OK {
+			state = "FAILED"
+		} else if c.Warning {
+			state = "warning"
+		}
+		line := fmt.Sprintf("Storage %s: %s: %s", svc.Name, strings.ReplaceAll(c.Name, "_", " "), state)
+		if c.Message != "" {
+			line += " (" + c.Message + ")"
+		}
+		fmt.Fprintln(out, line)
+	}
+	return err
 }
 
 type runningContext struct {

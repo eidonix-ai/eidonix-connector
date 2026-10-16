@@ -1,0 +1,67 @@
+package config
+
+// Template is the commented blank file `eidonix-connector init` writes (also
+// examples/connector.yaml). Every section is commented out with its defaults.
+const Template = `# What this machine shares through the Eidonix connector.
+# name: My GPU server                 # for your own reference only
+
+# The server this connector connects out to.
+upstream:
+  url: https://connect.example.com
+  token: PASTE_TOKEN_FROM_SETUP
+  public_keys:
+    - PASTE_KEY_FROM_SETUP
+  # proxy_url: http://proxy:3128      # only if your network requires a web proxy
+  # ca_certificate: |                 # only if your network uses its own certificate
+  #   -----BEGIN CERTIFICATE-----
+  #   …
+  #   -----END CERTIFICATE-----
+
+# Fill in the types you share; leave the rest empty or delete them.
+# Each service: a unique name, the url where it runs, and optional limits.
+# The connector reaches ONLY the urls listed here, and accepts only the
+# requests each type needs.
+
+# chat:                               # OpenAI-compatible chat (vLLM, SGLang, llama.cpp, …)
+#   - name: my-chat
+#     url: http://host:8000
+#     models: [model-name]            # only these models; ` + "`any`" + ` to allow all
+#     max_concurrent_requests: 32     # default
+#     idle_timeout: 15m               # default
+#     # max_requests_per_minute: 600  # optional rate limit
+#     # api_key: sk-…                 # only if the server needs a key
+#     # api_path: /                   # only if the server's API is not under /v1
+
+# anthropic:                          # Anthropic Messages API; models: required
+# embeddings:                         # models: required (default 32 at once, idle 2m)
+# rerank:                             # models: required (default 32 at once, idle 2m)
+# transcription:                      # speech to text; models: required (default 8 at once, idle 5m)
+# speech:                             # text to speech; models: required (default 8 at once, idle 2m)
+# image:                              # image generation and editing; models: required (default 2 at once, idle 10m)
+# document:                           # layout parsing (PDF/scan → text) (default 4 at once, idle 10m)
+# conversion:                         # document format conversion (default 4 at once, idle 10m)
+# realtime:                           # live voice over WebSocket (default 4 at once, idle 5m)
+#   - name: my-voice
+#     url: http://host:8011
+
+# storage:                            # your own S3-compatible storage (MinIO, Ceph, …)
+#   - name: files
+#     endpoint: https://s3.example.com:9000
+#     bucket: cletus                  # must already exist
+#     prefix: cletus/                 # all files are kept under this folder
+#     region: us-east-1
+#     access_key: AKIA…
+#     secret_key: …
+#     encryption: sse-c               # default; sse-c | sse-s3 | sse-kms | none
+#     encryption_key: …               # sse-c only: base64 of 32 bytes (eidonix-connector generate-key); back it up
+#     # max_file_size: 5GiB           # default (also the maximum)
+#     # max_read_per_hour: 50GB       # optional cap on bulk downloads
+#     # max_concurrent_requests: 16   # default
+
+# custom:                             # anything else; must list exactly what it allows
+#   - name: my-tool
+#     url: http://host:9000
+#     paths: ["POST /v1/run", "WEBSOCKET /v1/stream"]
+
+# access_log: /var/log/eidonix-connector/access.log   # default; one line per request, never contents
+`

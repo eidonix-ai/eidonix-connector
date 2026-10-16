@@ -1,0 +1,101 @@
+# Placeholder v0.1 configuration shaped like a GPU server's production file.
+server = "https://connect.example.com"
+token_file = "token.txt"
+audit_log = "/var/log/cletus-connector/audit.jsonl"
+health_listen = "127.0.0.1:9877"
+server_keys = { "example-2026" = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", "example-2025" = "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBA=" }
+
+[[routes]]
+id = "gpu1"
+type = "openai_chat"
+flavor = "vllm"
+upstreams = ["http://10.0.0.33:8000"]
+max_concurrency = 32
+idle_timeout = "900s"
+[routes.models]
+"chat-large" = "Qwen/Qwen3-32B"
+
+[[routes]]
+id = "gpu2"
+type = "openai_chat"
+upstreams = ["http://10.0.0.34:8000", "http://10.0.0.35:8000"]
+balance = "least_inflight"
+rate_limit = 2.5
+
+[[routes]]
+id = "embed"
+type = "openai_embeddings"
+flavor = "infinity"
+upstreams = ["http://10.0.0.30:8001"]
+health = { path = "/health", interval = "30s" }
+upstream_headers = { Authorization = "Bearer ${file:secrets/embed-api-key.txt}", "X-Tenant" = "example" }
+[routes.models]
+"nomic-embed" = "nomic-ai/nomic-embed-text-v1.5"
+
+[[routes]]
+id = "rerank"
+type = "rerank"
+upstreams = ["http://10.0.0.30:8006"]
+[routes.models]
+"jina-reranker" = "jina-reranker-v3"
+
+[[routes]]
+id = "stt"
+type = "audio_transcription"
+flavor = "openai"
+upstreams = ["http://10.0.0.30:8007"]
+max_request_bytes = "50MiB"
+[routes.models]
+"whisper" = "/models/faster-whisper-large-v3-turbo"
+
+[[routes]]
+id = "tts"
+type = "audio_speech"
+upstreams = ["http://10.0.0.30:8009"]
+
+[[routes]]
+id = "image"
+type = "image"
+upstreams = ["http://10.0.0.30:8010"]
+max_concurrency = 1
+
+[[routes]]
+id = "ocr"
+type = "document_ocr"
+upstreams = ["http://10.0.0.30:8002"]
+
+[[routes]]
+id = "convert"
+type = "document_conversion"
+flavor = "gotenberg"
+upstreams = ["http://10.0.0.30:3000"]
+
+[[routes]]
+id = "voice-live"
+type = "realtime_ws"
+upstreams = ["http://10.0.0.30:8011"]
+websocket_paths = ["/v1/stream"]
+methods_paths = [["GET", "/v1/config"]]
+[routes.models]
+"live" = "realtime-model"
+
+[[routes]]
+id = "files"
+type = "object_storage"
+endpoint = "https://s3.example.com:9000"
+bucket = "cletus"
+prefix = "cletus/"
+path_style = true
+credentials_file = "secrets/storage-credentials.txt"
+encryption = { mode = "sse-c", key_file = "secrets/sse-c.b64" }
+tls_ca_file = "ca.crt"
+max_read_bytes_per_hour = 53687091200
+part_size = "32MiB"
+
+[[routes]]
+id = "tool"
+type = "http"
+upstreams = ["http://10.0.0.40:9000"]
+methods_paths = [["POST", "/v1/run"]]
+websocket_paths = ["/v1/events"]
+content_types = ["application/json"]

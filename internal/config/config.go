@@ -95,23 +95,7 @@ type FileInfo struct {
 
 // Load opens path, applies the permission gate and parses the file.
 func Load(path string) (*Config, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-	fi, err := f.Stat()
-	if err != nil {
-		return nil, err
-	}
-	info, err := CheckPermissions(path, fi, os.Geteuid())
-	if err != nil {
-		return nil, err
-	}
-	if fi.Size() > maxFileBytes {
-		return nil, fmt.Errorf("config %s is larger than 1 MiB", path)
-	}
-	data, err := io.ReadAll(io.LimitReader(f, maxFileBytes+1))
+	data, info, err := ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
@@ -121,6 +105,28 @@ func Load(path string) (*Config, error) {
 	}
 	c.File = info
 	return c, nil
+}
+
+// ReadFile applies the permission gate and returns the file's bytes.
+func ReadFile(path string) ([]byte, FileInfo, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, FileInfo{}, err
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		return nil, FileInfo{}, err
+	}
+	info, err := CheckPermissions(path, fi, os.Geteuid())
+	if err != nil {
+		return nil, info, err
+	}
+	if fi.Size() > maxFileBytes {
+		return nil, info, fmt.Errorf("config %s is larger than 1 MiB", path)
+	}
+	data, err := io.ReadAll(io.LimitReader(f, maxFileBytes+1))
+	return data, info, err
 }
 
 // CheckPermissions is the file permission gate: a regular file owned by root

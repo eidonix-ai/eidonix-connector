@@ -1,0 +1,16 @@
+Connects to upstream connect.example.com (1 public key).
+Shares 11 services and can reach only these machines:
+  chat           gpu1         10.0.0.33:8000  models: Qwen/Qwen3-32B   max concurrent: 32
+  chat           gpu2         10.0.0.34:8000  models: meta-llama/Llama-3.3-70B-Instruct   max concurrent: 16
+  chat           chat-small   10.0.0.30:8004  models: qwen-small   max concurrent: 8   idle timeout: 5m
+  embeddings     embed        10.0.0.30:8001  models: nomic-embed → nomic-ai/nomic-embed-text-v1.5   api path: /   max concurrent: 32
+  rerank         rerank-jina  10.0.0.30:8006  models: jina-reranker → jina-reranker-v3   max concurrent: 32
+  rerank         rerank-bge   10.0.0.30:8008  models: bge-reranker   max concurrent: 32
+  transcription  stt          10.0.0.30:8007  models: whisper → /models/faster-whisper-large-v3-turbo   max concurrent: 8
+  speech         tts          10.0.0.30:8009  models: kokoro   max concurrent: 8
+  image          image        10.0.0.30:8010  models: qwen-image   max concurrent: 1
+  document       ocr          10.0.0.30:8002  max concurrent: 4
+  realtime       voice-live   10.0.0.30:8011  max concurrent: 4
+Not shared: anthropic, conversion, storage, custom.
+Logs every request to /var/log/eidonix-connector/access.log (never contents).
+File permissions: ok (0640 root:eidonix-connector). Secrets set: token.

@@ -1,0 +1,73 @@
+# What this machine shares through the Eidonix connector.
+name: Example GPU server              # for your own reference only
+
+# The server this connector connects out to.
+upstream:
+  url: https://connect.example.com
+  token: cxn_abcdefghijklmnop_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA   # placeholder; issued in Eidonix Setup
+  public_keys:                        # the upstream's signing keys; during a
+    - AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=   # rotation, list old and new
+
+# What this machine shares, by type. The connector reaches ONLY the urls
+# listed here, and accepts only the requests each type needs.
+# Every name must be unique in this file; it's what the upstream sees.
+
+chat:
+  - name: gpu1
+    url: http://10.0.0.33:8000
+    models: [Qwen/Qwen3-32B]          # only these models may be used
+    max_concurrent_requests: 32
+    idle_timeout: 15m                 # stop a request that sends nothing for this long
+  - name: gpu2
+    url: http://10.0.0.34:8000
+    models: [meta-llama/Llama-3.3-70B-Instruct]
+    max_concurrent_requests: 16
+  - name: chat-small                  # small chat model on the utility server
+    url: http://10.0.0.30:8004
+    models: [qwen-small]
+    max_concurrent_requests: 8
+    idle_timeout: 5m
+
+embeddings:
+  - name: embed
+    url: http://10.0.0.30:8001
+    api_path: /                       # this server's API is at / rather than /v1
+    models:
+      nomic-embed: nomic-ai/nomic-embed-text-v1.5   # name the upstream uses: name your server uses
+
+rerank:
+  - name: rerank-jina
+    url: http://10.0.0.30:8006
+    models:
+      jina-reranker: jina-reranker-v3
+  - name: rerank-bge
+    url: http://10.0.0.30:8008
+    models: [bge-reranker]
+
+transcription:
+  - name: stt
+    url: http://10.0.0.30:8007
+    models:
+      whisper: /models/faster-whisper-large-v3-turbo
+
+speech:
+  - name: tts
+    url: http://10.0.0.30:8009
+    models: [kokoro]
+
+image:
+  - name: image
+    url: http://10.0.0.30:8010
+    models: [qwen-image]
+    max_concurrent_requests: 1        # one image at a time on this card
+
+document:                             # layout parsing (PDF/scan → text)
+  - name: ocr
+    url: http://10.0.0.30:8002
+
+realtime:                             # live transcription
+  - name: voice-live
+    url: http://10.0.0.30:8011
+    max_concurrent_requests: 4
+
+access_log: /var/log/eidonix-connector/access.log   # one line per request; never contents
