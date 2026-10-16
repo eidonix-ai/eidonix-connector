@@ -81,7 +81,7 @@ func TestRateAndAudit(t *testing.T) {
 	h.cfg.MaxOpsPerSecond = .001
 	h.tokens = 1
 	h.last = time.Now()
-	first, _ := storageExchange(t, h, protocol.StreamHeader{Op: "head", Key: b64("filename-sensitive")}, nil)
+	first, _ := storageExchange(t, h, protocol.StreamHeader{Op: "head", Key: b64("filename-sensitive"), OrgID: "7", OrgSlug: "example-org", UserKeyID: "42"}, nil)
 	if errorCode(first) != "not_found" {
 		t.Fatal(first)
 	}
@@ -93,6 +93,10 @@ func TestRateAndAudit(t *testing.T) {
 	defer mu.Unlock()
 	if len(entries) != 2 || entries[1].Status != "rate_limited" || len(entries[1].KeyHash) != 64 || strings.Contains(entries[1].KeyHash, "filename") {
 		t.Fatalf("invalid audit %+v", entries)
+	}
+	// Access log lines name the service, its type and the caller the gateway reported.
+	if e := entries[0]; e.Service != "files" || e.Type != "storage" || e.OrgSlug != "example-org" || e.OrgID != "7" || e.UserKeyID != "42" || e.RequestID != "docker-test" || e.Time.IsZero() || e.Origin != "upstream" {
+		t.Fatalf("access entry %+v", e)
 	}
 }
 func TestReadBudget(t *testing.T) {

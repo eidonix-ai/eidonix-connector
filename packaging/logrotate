@@ -1,4 +1,4 @@
-/var/log/eidonix-connector/audit.jsonl {
+/var/log/eidonix-connector/access.log {
     daily
     rotate 14
     compress
