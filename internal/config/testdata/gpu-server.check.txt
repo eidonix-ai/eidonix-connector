@@ -1,4 +1,4 @@
-Connects to upstream connect.example.com (1 public key).
+Connects to upstream connect.eidonix.com (1 public key).
 Shares 11 services and can reach only these machines:
   chat           gpu1         10.0.0.33:8000  models: Qwen/Qwen3-32B   max concurrent: 32
   chat           gpu2         10.0.0.34:8000  models: meta-llama/Llama-3.3-70B-Instruct   max concurrent: 16

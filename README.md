@@ -21,7 +21,7 @@ One file, `/etc/eidonix-connector/connector.yaml`, says:
 
 ```yaml
 upstream:
-  url: https://connect.example.com
+  url: https://connect.eidonix.com
   token: cxn_…                       # issued in Eidonix Setup
   public_keys: [BASE64_KEY_FROM_SETUP]
 
@@ -35,7 +35,7 @@ chat:
 `eidonix-connector check` explains the file back in sentences:
 
 ```
-Connects to upstream connect.example.com (1 public key).
+Connects to upstream connect.eidonix.com (1 public key).
 Shares 1 service and can reach only this machine:
   chat  gpu1  10.0.0.33:8000  models: Qwen/Qwen3-32B   max concurrent: 32
 Not shared: anthropic, embeddings, rerank, transcription, speech, image, document, conversion, realtime, storage, custom.

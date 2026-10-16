@@ -7,7 +7,7 @@ const Template = `# What this machine shares through the Eidonix connector.
 
 # The server this connector connects out to.
 upstream:
-  url: https://connect.example.com
+  url: https://connect.eidonix.com
   token: PASTE_TOKEN_FROM_SETUP
   public_keys:
     - PASTE_KEY_FROM_SETUP

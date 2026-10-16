@@ -3,7 +3,7 @@ name: Example GPU server              # for your own reference only
 
 # The server this connector connects out to.
 upstream:
-  url: https://connect.example.com
+  url: https://connect.eidonix.com
   token: cxn_abcdefghijklmnop_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA   # placeholder; issued in Eidonix Setup
   public_keys:                        # the upstream's signing keys; during a
     - AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=   # rotation, list old and new
