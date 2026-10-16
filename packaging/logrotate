@@ -1,17 +1,17 @@
-/var/log/cletus-connector/audit.jsonl {
+/var/log/eidonix-connector/audit.jsonl {
     daily
     rotate 14
     compress
     delaycompress
     missingok
     notifempty
-    create 0640 cletus-connector cletus-connector
+    create 0640 eidonix-connector eidonix-connector
     sharedscripts
     postrotate
         if command -v systemctl >/dev/null 2>&1; then
-            systemctl kill --kill-who=main --signal=USR1 cletus-connector.service
+            systemctl kill --kill-who=main --signal=USR1 eidonix-connector.service
         else
-            rc-service --ifstarted cletus-connector reopen
+            rc-service --ifstarted eidonix-connector reopen
         fi >/dev/null 2>&1 || true
     endscript
 }

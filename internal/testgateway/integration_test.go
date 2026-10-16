@@ -17,9 +17,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/eidonix-ai/cletus-connector/internal/config"
-	"github.com/eidonix-ai/cletus-connector/internal/connector"
-	"github.com/eidonix-ai/cletus-connector/internal/session"
+	"github.com/eidonix-ai/eidonix-connector/internal/config"
+	"github.com/eidonix-ai/eidonix-connector/internal/connector"
+	"github.com/eidonix-ai/eidonix-connector/internal/session"
 	"github.com/gorilla/websocket"
 )
 
@@ -276,13 +276,13 @@ type zeroReader struct{}
 func (zeroReader) Read(b []byte) (int, error) { clear(b); return len(b), nil }
 
 func TestLongSSESoak(t *testing.T) {
-	value := os.Getenv("CLETUS_SOAK_DURATION")
+	value := os.Getenv("EIDONIX_SOAK_DURATION")
 	if value == "" {
-		t.Skip("set CLETUS_SOAK_DURATION=45m for release soak")
+		t.Skip("set EIDONIX_SOAK_DURATION=45m for release soak")
 	}
 	duration, e := time.ParseDuration(value)
 	if e != nil || duration <= 0 {
-		t.Fatal("invalid CLETUS_SOAK_DURATION")
+		t.Fatal("invalid EIDONIX_SOAK_DURATION")
 	}
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		io.Copy(io.Discard, r.Body)

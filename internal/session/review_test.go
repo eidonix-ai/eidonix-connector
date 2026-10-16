@@ -1,7 +1,7 @@
 package session
 
 import (
-	"github.com/eidonix-ai/cletus-connector/protocol"
+	"github.com/eidonix-ai/eidonix-connector/protocol"
 	"testing"
 )
 

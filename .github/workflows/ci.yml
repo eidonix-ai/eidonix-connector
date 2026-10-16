@@ -14,16 +14,16 @@ jobs:
       - run: gitleaks git --no-banner --redact
       - run: go test -race ./...
       - run: go vet ./...
-      - run: go build ./cmd/cletus-connector ./cmd/test-gateway
+      - run: go build ./cmd/eidonix-connector ./cmd/test-gateway
       - run: go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
       - run: govulncheck ./...
       - run: VERSION=ci ./scripts/build.sh
       - run: |
-          cp dist/cletus-connector-linux-amd64 /tmp/first-amd64
-          cp dist/cletus-connector-linux-arm64 /tmp/first-arm64
+          cp dist/eidonix-connector-linux-amd64 /tmp/first-amd64
+          cp dist/eidonix-connector-linux-arm64 /tmp/first-arm64
           VERSION=ci ./scripts/build.sh
-          cmp /tmp/first-amd64 dist/cletus-connector-linux-amd64
-          cmp /tmp/first-arm64 dist/cletus-connector-linux-arm64
+          cmp /tmp/first-amd64 dist/eidonix-connector-linux-amd64
+          cmp /tmp/first-arm64 dist/eidonix-connector-linux-arm64
       - run: go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.41.3
       - run: VERSION=0.0.0-ci ./scripts/package.sh
       - run: go install github.com/anchore/syft/cmd/syft@v1.20.0

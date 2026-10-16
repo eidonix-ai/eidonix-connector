@@ -7,7 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"github.com/eidonix-ai/cletus-connector/protocol"
+	"github.com/eidonix-ai/eidonix-connector/protocol"
 	"github.com/minio/minio-go/v7"
 	"io"
 	"mime"

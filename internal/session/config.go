@@ -6,9 +6,9 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
-	"github.com/eidonix-ai/cletus-connector/internal/config"
-	"github.com/eidonix-ai/cletus-connector/internal/network"
-	"github.com/eidonix-ai/cletus-connector/protocol"
+	"github.com/eidonix-ai/eidonix-connector/internal/config"
+	"github.com/eidonix-ai/eidonix-connector/internal/network"
+	"github.com/eidonix-ai/eidonix-connector/protocol"
 	"io"
 	"log/slog"
 	"net/http"
@@ -125,7 +125,7 @@ func Run(ctx context.Context, cfg *config.Config, h Handler, version string) err
 				err := o.refresh(refreshCtx)
 				cancel()
 				if err != nil {
-					slog.Error("cloud DNS refresh failed; run cletus-connector print-systemd-network, regenerate the systemd network drop-in and restart locally", "error", err)
+					slog.Error("cloud DNS refresh failed; run eidonix-connector print-systemd-network, regenerate the systemd network drop-in and restart locally", "error", err)
 				}
 			}
 		}

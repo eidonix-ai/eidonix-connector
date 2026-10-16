@@ -16,8 +16,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/eidonix-ai/cletus-connector/internal/config"
-	"github.com/eidonix-ai/cletus-connector/protocol"
+	"github.com/eidonix-ai/eidonix-connector/internal/config"
+	"github.com/eidonix-ai/eidonix-connector/protocol"
 )
 
 // aliasUpstream records what the upstream actually received.

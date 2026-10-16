@@ -7,29 +7,29 @@ Verify the release manifest using a release public key received through an indep
 ```sh
 minisign -Vm SHA256SUMS -P "$TRUSTED_RELEASE_PUBLIC_KEY"
 sha256sum -c SHA256SUMS
-sudo apt install ./cletus-connector_*.deb   # Debian/Ubuntu, select one matching architecture
-# Fedora/RHEL family: sudo dnf install ./cletus-connector_*.rpm
-# Alpine: apk add --allow-untrusted ./cletus-connector_*.apk (see below)
+sudo apt install ./eidonix-connector_*.deb   # Debian/Ubuntu, select one matching architecture
+# Fedora/RHEL family: sudo dnf install ./eidonix-connector_*.rpm
+# Alpine: apk add --allow-untrusted ./eidonix-connector_*.apk (see below)
 ```
 
-Package installation creates the service user and log directory; it never enables or starts the service. Copy `/usr/share/doc/cletus-connector/config.example.toml` to `/etc/cletus-connector/config.toml` (the only configuration file and format; see [configuration](CONFIG.md)). Add one `[[routes]]` entry per local service, with `[routes.models]` aliases where the gateway's model names differ from the upstream ids. Set upstreams, obtain the connector token from the gateway operator, and install the independently verified server Ed25519 public key. The release-signing key and server identity key serve different purposes.
+Package installation creates the service user and log directory; it never enables or starts the service. Copy `/usr/share/doc/eidonix-connector/config.example.toml` to `/etc/eidonix-connector/config.toml` (the only configuration file and format; see [configuration](CONFIG.md)). Add one `[[routes]]` entry per local service, with `[routes.models]` aliases where the gateway's model names differ from the upstream ids. Set upstreams, obtain the connector token from the gateway operator, and install the independently verified server Ed25519 public key. The release-signing key and server identity key serve different purposes.
 
 ```sh
-sudo install -m 0640 -o root -g cletus-connector /secure/token /etc/cletus-connector/token
-sudo chown root:cletus-connector /etc/cletus-connector/config.toml
-sudo chmod 0640 /etc/cletus-connector/config.toml
-sudo -u cletus-connector cletus-connector check-config
-sudo mkdir -p /etc/systemd/system/cletus-connector.service.d
-sudo --preserve-env=HTTPS_PROXY,NO_PROXY,https_proxy,no_proxy sh -c 'cletus-connector print-systemd-network > /etc/systemd/system/cletus-connector.service.d/network.conf'
-sudoedit /etc/systemd/system/cletus-connector.service.d/network.conf
+sudo install -m 0640 -o root -g eidonix-connector /secure/token /etc/eidonix-connector/token
+sudo chown root:eidonix-connector /etc/eidonix-connector/config.toml
+sudo chmod 0640 /etc/eidonix-connector/config.toml
+sudo -u eidonix-connector eidonix-connector check-config
+sudo mkdir -p /etc/systemd/system/eidonix-connector.service.d
+sudo --preserve-env=HTTPS_PROXY,NO_PROXY,https_proxy,no_proxy sh -c 'eidonix-connector print-systemd-network > /etc/systemd/system/eidonix-connector.service.d/network.conf'
+sudoedit /etc/systemd/system/eidonix-connector.service.d/network.conf
 sudo systemctl daemon-reload
-sudo systemctl enable --now cletus-connector
-sudo journalctl -u cletus-connector -f
+sudo systemctl enable --now eidonix-connector
+sudo journalctl -u eidonix-connector -f
 ```
 
 DNS review is mandatory before enabling the unit. The generator permits localhost and prints remote `/etc/resolv.conf` nameserver IPs as commented `# IPAddressAllow=` lines. Review and uncomment the resolvers this host actually uses, or configure a local DNS stub. Debian and RHEL-family installations commonly use remote resolvers; leaving their lines commented prevents startup DNS and periodic refresh. Do not allow an entire LAN to solve a DNS failure. Regenerate and review the drop-in after resolver or endpoint address changes. systemd filters IPs; application dialers additionally restrict upstream/cloud destination ports.
 
-Use the same proxy settings for generation, validation and the service. `sudo` normally discards them, so preserve only the relevant variables as shown above; for validation use `sudo --preserve-env=HTTPS_PROXY,NO_PROXY,https_proxy,no_proxy -u cletus-connector cletus-connector check-config`. Configure the service's proxy separately in a local unit drop-in, for example:
+Use the same proxy settings for generation, validation and the service. `sudo` normally discards them, so preserve only the relevant variables as shown above; for validation use `sudo --preserve-env=HTTPS_PROXY,NO_PROXY,https_proxy,no_proxy -u eidonix-connector eidonix-connector check-config`. Configure the service's proxy separately in a local unit drop-in, for example:
 
 ```ini
 [Service]
@@ -41,48 +41,48 @@ Environment="NO_PROXY=localhost,127.0.0.1"
 
 Development builds before TOML read `config.yaml`; that file is no longer read. Rewrite it as `config.toml` (keys keep their names) and run `check-config`.
 
-After editing config, run `check-config`, regenerate the network drop-in if destinations changed, then `systemctl daemon-reload` and `systemctl reload cletus-connector`. SIGHUP validates replacement configuration before replacing the active runtime; rejected changes leave the active configuration running. A successful reload reconnects and ends active streams. Logrotate uses SIGUSR1 to reopen the audit file without reloading configuration, reconnecting or interrupting active streams. A local `systemctl kill --kill-who=main --signal=USR1 cletus-connector` performs the same reopen; failure to open the replacement keeps the previous file open and is logged. Retain logs according to local policy; they contain request metadata but no bodies.
+After editing config, run `check-config`, regenerate the network drop-in if destinations changed, then `systemctl daemon-reload` and `systemctl reload eidonix-connector`. SIGHUP validates replacement configuration before replacing the active runtime; rejected changes leave the active configuration running. A successful reload reconnects and ends active streams. Logrotate uses SIGUSR1 to reopen the audit file without reloading configuration, reconnecting or interrupting active streams. A local `systemctl kill --kill-who=main --signal=USR1 eidonix-connector` performs the same reopen; failure to open the replacement keeps the previous file open and is logged. Retain logs according to local policy; they contain request metadata but no bodies.
 
 For SELinux enforcing RHEL-family hosts, the intended deployment uses the default `unconfined_service_t`; no custom policy or booleans are shipped. VM evidence is required to confirm behavior on a target host.
 
 ## Alpine (OpenRC)
 
-The `.apk` package installs the same binary, configuration example and logrotate policy, plus an OpenRC service (`/etc/init.d/cletus-connector`, run under `supervise-daemon` as the `cletus-connector` user). It suits small hosts such as an Alpine LXC container.
+The `.apk` package installs the same binary, configuration example and logrotate policy, plus an OpenRC service (`/etc/init.d/eidonix-connector`, run under `supervise-daemon` as the `eidonix-connector` user). It suits small hosts such as an Alpine LXC container.
 
 The package is not signed with an apk key; its integrity comes from the verified `SHA256SUMS` above, so install it with `--allow-untrusted` only after `sha256sum -c` passes.
 
 ```sh
 apk add logrotate                      # optional; rotation of the audit log
-apk add --allow-untrusted ./cletus-connector_*_amd64.apk
-cp /usr/share/doc/cletus-connector/config.example.toml /etc/cletus-connector/config.toml
-install -m 0640 -o root -g cletus-connector /secure/token /etc/cletus-connector/token
-chown root:cletus-connector /etc/cletus-connector/config.toml
-chmod 0640 /etc/cletus-connector/config.toml
-su -s /bin/sh cletus-connector -c 'cletus-connector check-config'
-rc-update add cletus-connector default
-rc-service cletus-connector start
-tail -f /var/log/messages               # service output goes to syslog (tag cletus-connector)
+apk add --allow-untrusted ./eidonix-connector_*_amd64.apk
+cp /usr/share/doc/eidonix-connector/config.example.toml /etc/eidonix-connector/config.toml
+install -m 0640 -o root -g eidonix-connector /secure/token /etc/eidonix-connector/token
+chown root:eidonix-connector /etc/eidonix-connector/config.toml
+chmod 0640 /etc/eidonix-connector/config.toml
+su -s /bin/sh eidonix-connector -c 'eidonix-connector check-config'
+rc-update add eidonix-connector default
+rc-service eidonix-connector start
+tail -f /var/log/messages               # service output goes to syslog (tag eidonix-connector)
 ```
 
 The token file must be a regular file owned by root with mode 0600 or 0640; anything else (for example 0644) is refused, including on reload.
 
 Day to day:
 
-- `rc-service cletus-connector reload` validates and applies a changed configuration (SIGHUP; rejected changes leave the running configuration in place; a successful reload reconnects and ends active streams).
-- `rc-service cletus-connector reopen` reopens the audit log (SIGUSR1); the packaged logrotate policy calls it after rotation.
-- `rc-service cletus-connector status`, `stop`, `restart` behave as usual; `supervise-daemon` restarts the connector if it exits.
+- `rc-service eidonix-connector reload` validates and applies a changed configuration (SIGHUP; rejected changes leave the running configuration in place; a successful reload reconnects and ends active streams).
+- `rc-service eidonix-connector reopen` reopens the audit log (SIGUSR1); the packaged logrotate policy calls it after rotation.
+- `rc-service eidonix-connector status`, `stop`, `restart` behave as usual; `supervise-daemon` restarts the connector if it exits.
 
 **Egress.** OpenRC has no equivalent of the systemd unit's sandbox or cgroup IP filter, and `print-systemd-network` does not apply. The connector's own dial allowlist (upstream and cloud destinations from the configuration) still applies. Restrict the host's egress outside the connector: on an LXC container, the hypervisor firewall for the container (for example the Proxmox VE firewall with an outbound default of DROP), otherwise nftables on the host. Permit DNS to the resolvers in use, the gateway's IPs on 443 (or the proxy), and each upstream IP:port; reject everything else. Review the rules whenever an endpoint or resolver address changes.
 
 ## Container
 
 ```sh
-docker buildx build --platform linux/amd64,linux/arm64 -t cletus-connector:local .
+docker buildx build --platform linux/amd64,linux/arm64 -t eidonix-connector:local .
 docker run --read-only --cap-drop ALL --security-opt no-new-privileges \
   --network connector-egress \
-  -v /etc/cletus-connector:/etc/cletus-connector:ro \
-  -v /var/log/cletus-connector:/var/log/cletus-connector \
-  cletus-connector:local
+  -v /etc/eidonix-connector:/etc/eidonix-connector:ro \
+  -v /var/log/eidonix-connector:/var/log/eidonix-connector \
+  eidonix-connector:local
 ```
 
 Create a dedicated Docker bridge and apply host firewall rules to its subnet in the `DOCKER-USER` chain (or the corresponding nftables forwarding chain): permit established replies and only resolved cloud/proxy IPs and upstream IP:ports, then reject all other egress. Configure and test DNS separately if hostname refresh is used. Docker's network by itself does not enforce an egress allowlist. Use host-specific rules; incorrect ordering can bypass restrictions. Ensure mounted config/secrets are readable by UID 65532 and the audit directory writable by it, without making secrets world-readable. No listening port is published by default.
@@ -127,12 +127,12 @@ This IAM-style template grants exactly six S3 actions. Replace the neutral bucke
 Run read-only checks before enabling the route:
 
 ```sh
-sudo --preserve-env=HTTPS_PROXY,NO_PROXY,https_proxy,no_proxy -u cletus-connector cletus-connector check-config
+sudo --preserve-env=HTTPS_PROXY,NO_PROXY,https_proxy,no_proxy -u eidonix-connector eidonix-connector check-config
 # Explicitly permits a small temporary upload/read/delete probe:
-sudo --preserve-env=HTTPS_PROXY,NO_PROXY,https_proxy,no_proxy -u cletus-connector cletus-connector check-config --write-probe
+sudo --preserve-env=HTTPS_PROXY,NO_PROXY,https_proxy,no_proxy -u eidonix-connector eidonix-connector check-config --write-probe
 ```
 
-Default checks inspect the bucket, list one object under the prefix, check an existing nonempty object's encryption when available, check multipart-list permission, and test whether account-wide bucket listing succeeds. A successful account-wide list produces an over-privilege warning; it is not a required permission. These checks do not write objects. The write probe uses a random path beneath the reserved local `.cletus-connector/probe/` area, verifies a round trip and deletion, and attempts cleanup on failure. For SSE-C it also checks that reading without the key fails. Investigate any reported leftover object or failed abort. Neither the gateway, normal service startup nor installation scripts can request the write probe.
+Default checks inspect the bucket, list one object under the prefix, check an existing nonempty object's encryption when available, check multipart-list permission, and test whether account-wide bucket listing succeeds. A successful account-wide list produces an over-privilege warning; it is not a required permission. These checks do not write objects. The write probe uses a random path beneath the reserved local `.eidonix-connector/probe/` area, verifies a round trip and deletion, and attempts cleanup on failure. For SSE-C it also checks that reading without the key fails. Investigate any reported leftover object or failed abort. Neither the gateway, normal service startup nor installation scripts can request the write probe.
 
 After reviewing existing bucket lifecycle rules, use your administrative tools to add an incomplete-multipart cleanup rule under the chosen prefix. Merge it with existing rules; the connector never installs or reads this lifecycle configuration:
 

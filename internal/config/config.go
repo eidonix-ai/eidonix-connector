@@ -4,7 +4,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"github.com/BurntSushi/toml"
-	"github.com/eidonix-ai/cletus-connector/internal/profiles"
+	"github.com/eidonix-ai/eidonix-connector/internal/profiles"
 	"io"
 	"math"
 	"net"
@@ -80,7 +80,7 @@ type Route struct {
 }
 
 // DefaultPath is the canonical configuration location.
-const DefaultPath = "/etc/cletus-connector/config.toml"
+const DefaultPath = "/etc/eidonix-connector/config.toml"
 
 func Load(path string) (*Config, error) {
 	f, e := os.Open(path)
@@ -104,7 +104,7 @@ func Load(path string) (*Config, error) {
 		return nil, e
 	}
 	if c.AuditLog == "" {
-		c.AuditLog = "/var/log/cletus-connector/audit.jsonl"
+		c.AuditLog = "/var/log/eidonix-connector/audit.jsonl"
 	}
 	return c.Normalized()
 }

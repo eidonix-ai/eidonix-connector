@@ -13,15 +13,15 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/eidonix-ai/cletus-connector/internal/config"
-	"github.com/eidonix-ai/cletus-connector/internal/connector"
-	"github.com/eidonix-ai/cletus-connector/internal/network"
-	"github.com/eidonix-ai/cletus-connector/internal/session"
-	"github.com/eidonix-ai/cletus-connector/internal/storage"
+	"github.com/eidonix-ai/eidonix-connector/internal/config"
+	"github.com/eidonix-ai/eidonix-connector/internal/connector"
+	"github.com/eidonix-ai/eidonix-connector/internal/network"
+	"github.com/eidonix-ai/eidonix-connector/internal/session"
+	"github.com/eidonix-ai/eidonix-connector/internal/storage"
 	"time"
 )
 
-var version = "dev"
+var version = "0.2.0"
 
 type upstreamFlags []string
 
@@ -36,7 +36,7 @@ func main() {
 }
 func execute(args []string, out, errOut io.Writer, uid int) error {
 	if len(args) == 0 {
-		return errors.New("usage: cletus-connector run|check-config|print-systemd-network|init|version")
+		return errors.New("usage: eidonix-connector run|check-config|print-systemd-network|init|version")
 	}
 	command := args[0]
 	fs := flag.NewFlagSet(command, flag.ContinueOnError)
@@ -126,7 +126,7 @@ func starter(out io.Writer, profile string, upstream []string) error {
 	if len(upstream) == 0 {
 		return errors.New("init requires --upstream")
 	}
-	cfg := config.Config{Server: "https://gateway.example.com", TokenFile: "/etc/cletus-connector/token", ServerKeys: map[string]string{"operator-key-id": "REPLACE_WITH_VERIFIED_BASE64_ED25519_PUBLIC_KEY"}, TLS: config.TLS{CA: "system"}, AuditLog: "/var/log/cletus-connector/audit.jsonl", Routes: []config.Route{{ID: "inference", Type: typ, Flavor: flavor, Upstreams: upstream}}}
+	cfg := config.Config{Server: "https://gateway.example.com", TokenFile: "/etc/eidonix-connector/token", ServerKeys: map[string]string{"operator-key-id": "REPLACE_WITH_VERIFIED_BASE64_ED25519_PUBLIC_KEY"}, TLS: config.TLS{CA: "system"}, AuditLog: "/var/log/eidonix-connector/audit.jsonl", Routes: []config.Route{{ID: "inference", Type: typ, Flavor: flavor, Upstreams: upstream}}}
 	if profile == "generic" {
 		cfg.Routes[0].ID = "chat"
 	}
@@ -136,7 +136,7 @@ func starter(out io.Writer, profile string, upstream []string) error {
 	if err := validation.Validate(); err != nil {
 		return err
 	}
-	fmt.Fprintln(out, "# Cletus connector configuration (TOML). Replace the placeholder with the server")
+	fmt.Fprintln(out, "# Eidonix connector configuration (TOML). Replace the placeholder with the server")
 	fmt.Fprintln(out, "# operator's independently verified Ed25519 key. Add each additional service as its")
 	fmt.Fprintln(out, "# own [[routes]] entry with its locally reviewed profile and upstream origin; map")
 	fmt.Fprintln(out, "# gateway model names to upstream ids under [routes.models] where needed.")

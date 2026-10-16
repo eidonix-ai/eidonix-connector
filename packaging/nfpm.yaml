@@ -1,10 +1,10 @@
-name: cletus-connector
+name: eidonix-connector
 arch: ${ARCH}
 platform: linux
 mtime: "1970-01-01T00:00:00Z"
 version: ${VERSION}
 maintainer: Eidonix
-homepage: https://github.com/eidonix-ai/cletus-connector
+homepage: https://github.com/eidonix-ai/eidonix-connector
 license: Apache-2.0
 description: Outbound, locally allowlisted inference connector
 section: net
@@ -20,25 +20,25 @@ overrides:
   apk:
     depends: [ca-certificates, openrc, logrotate]
 contents:
-  - src: dist/cletus-connector-linux-${ARCH}
-    dst: /usr/bin/cletus-connector
+  - src: dist/eidonix-connector-linux-${ARCH}
+    dst: /usr/bin/eidonix-connector
     file_info: {mode: 0755}
-  - src: packaging/cletus-connector.service
-    dst: /usr/lib/systemd/system/cletus-connector.service
+  - src: packaging/eidonix-connector.service
+    dst: /usr/lib/systemd/system/eidonix-connector.service
     packager: deb
-  - src: packaging/cletus-connector.service
-    dst: /usr/lib/systemd/system/cletus-connector.service
+  - src: packaging/eidonix-connector.service
+    dst: /usr/lib/systemd/system/eidonix-connector.service
     packager: rpm
-  - src: packaging/cletus-connector.openrc
-    dst: /etc/init.d/cletus-connector
+  - src: packaging/eidonix-connector.openrc
+    dst: /etc/init.d/eidonix-connector
     file_info: {mode: 0755}
     packager: apk
   - src: examples/config.toml
-    dst: /usr/share/doc/cletus-connector/config.example.toml
+    dst: /usr/share/doc/eidonix-connector/config.example.toml
   - src: packaging/logrotate
-    dst: /etc/logrotate.d/cletus-connector
+    dst: /etc/logrotate.d/eidonix-connector
     type: config|noreplace
   - src: LICENSE
-    dst: /usr/share/doc/cletus-connector/LICENSE
+    dst: /usr/share/doc/eidonix-connector/LICENSE
 scripts:
   postinstall: packaging/postinstall.sh

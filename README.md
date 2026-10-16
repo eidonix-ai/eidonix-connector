@@ -1,15 +1,15 @@
-# Cletus Connector
+# Eidonix Connector
 
-An outbound Linux connector for inference and bring-your-own S3-compatible object storage. One local TOML file (`/etc/cletus-connector/config.toml`, one `[[routes]]` entry per connected service) fixes upstream destinations, methods, paths, headers, model-name aliases and resource limits. The cloud opens inference and typed storage streams over one authenticated WebSocket/yamux session; it cannot update local configuration or execute commands.
+An outbound Linux connector for inference and bring-your-own S3-compatible object storage. One local TOML file (`/etc/eidonix-connector/config.toml`, one `[[routes]]` entry per connected service) fixes upstream destinations, methods, paths, headers, model-name aliases and resource limits. The cloud opens inference and typed storage streams over one authenticated WebSocket/yamux session; it cannot update local configuration or execute commands.
 
 Storage exposes only put, get, head, list, delete and same-prefix copy. Endpoint, bucket, credentials and encryption stay under local operator control. Uploads commit only after byte counts, SHA-256 and stream completion are verified. Run the TLS MinIO acceptance suite with `./ci/storage-minio.sh`; see the image configuration note in [verification evidence](ci/evidence/README.md).
 
-Module: `github.com/eidonix-ai/cletus-connector`. License: Apache-2.0.
+Module: `github.com/eidonix-ai/eidonix-connector`. License: Apache-2.0.
 
 ```sh
 go test ./...
 make build
-./dist/cletus-connector-linux-amd64 version
+./dist/eidonix-connector-linux-amd64 version
 ```
 
 Builds require Go 1.27.2 and target Linux amd64 and arm64, packaged as .deb, .rpm and .apk (Alpine, OpenRC). Read [installation](docs/INSTALL.md), [configuration](docs/CONFIG.md), [security](docs/SECURITY.md), and [protocol](docs/PROTOCOL.md), and [implementation status](docs/IMPLEMENTATION.md).
@@ -26,7 +26,7 @@ Start an OpenAI-compatible upstream on loopback, then create development-only cr
 go run ./cmd/test-gateway --init --state /tmp/connector-dev --upstream http://127.0.0.1:8000
 go run ./cmd/test-gateway --state /tmp/connector-dev
 # In another terminal (ensure local credential ownership satisfies secret checks):
-go run ./cmd/cletus-connector run --config /tmp/connector-dev/config.toml
+go run ./cmd/eidonix-connector run --config /tmp/connector-dev/config.toml
 curl --cacert /tmp/connector-dev/tls.pem \
   -H "Authorization: Bearer $(cat /tmp/connector-dev/token)" \
   -H 'Content-Type: application/json' \

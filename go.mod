@@ -1,4 +1,4 @@
-module github.com/eidonix-ai/cletus-connector
+module github.com/eidonix-ai/eidonix-connector
 
 go 1.27.2
 

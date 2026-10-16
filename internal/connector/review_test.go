@@ -19,8 +19,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/eidonix-ai/cletus-connector/internal/config"
-	"github.com/eidonix-ai/cletus-connector/protocol"
+	"github.com/eidonix-ai/eidonix-connector/internal/config"
+	"github.com/eidonix-ai/eidonix-connector/protocol"
 )
 
 func reviewConfig(origin string) *config.Config {

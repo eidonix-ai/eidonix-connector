@@ -5,7 +5,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
-	"github.com/eidonix-ai/cletus-connector/internal/config"
+	"github.com/eidonix-ai/eidonix-connector/internal/config"
 	"io"
 	"net"
 	"net/http"

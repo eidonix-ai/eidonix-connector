@@ -1,13 +1,13 @@
 # Configuration
 
-The connector is configured by one [TOML](https://toml.io) file. `run`, `check-config` and `print-systemd-network` use `/etc/cletus-connector/config.toml` by default; override with `--config`. `init --profile vllm --upstream http://192.0.2.20:8000` prints a starter TOML file; `--upstream` may be repeated for load balancing. `--profile generic` creates a generic chat route using only the upstream origins supplied by the operator. Add other services individually with their reviewed profile and port. Replace the server key placeholder before using it. `check-config` prints effective methods/paths, destinations and model aliases without upstream secret values.
+The connector is configured by one [TOML](https://toml.io) file. `run`, `check-config` and `print-systemd-network` use `/etc/eidonix-connector/config.toml` by default; override with `--config`. `init --profile vllm --upstream http://192.0.2.20:8000` prints a starter TOML file; `--upstream` may be repeated for load balancing. `--profile generic` creates a generic chat route using only the upstream origins supplied by the operator. Add other services individually with their reviewed profile and port. Replace the server key placeholder before using it. `check-config` prints effective methods/paths, destinations and model aliases without upstream secret values.
 
 Each connected service is one `[[routes]]` entry. Parsing is strict: unknown keys, values of the wrong type, redefined keys and malformed method/path pairs are configuration errors, so a mistyped option never silently falls back to a default. A complete file:
 
 ```toml
 server = "https://gateway.example.com"
-token_file = "/etc/cletus-connector/token"
-audit_log = "/var/log/cletus-connector/audit.jsonl"
+token_file = "/etc/eidonix-connector/token"
+audit_log = "/var/log/eidonix-connector/audit.jsonl"
 
 [server_keys]
 "operator-key-id" = "BASE64_ED25519_PUBLIC_KEY"
@@ -26,7 +26,7 @@ extra_paths = [["GET", "/v1/models"]]
 "jina-reranker" = "jina-reranker-v3"
 ```
 
-A `[routes.models]` (or `[routes.health]`, `[routes.upstream_headers]`, `[routes.encryption]`) table belongs to the `[[routes]]` entry above it, so keep each route's tables directly beneath its keys. The packaged example is installed as `/usr/share/doc/cletus-connector/config.example.toml`.
+A `[routes.models]` (or `[routes.health]`, `[routes.upstream_headers]`, `[routes.encryption]`) table belongs to the `[[routes]]` entry above it, so keep each route's tables directly beneath its keys. The packaged example is installed as `/usr/share/doc/eidonix-connector/config.example.toml`.
 
 Top-level fields:
 
@@ -36,7 +36,7 @@ Top-level fields:
 | `token_file` | Local bearer token file |
 | `server_keys` | One or two key-ID to base64 Ed25519 public-key mappings |
 | `tls.ca`, `tls.ca_file` | `system` or `file`, with local CA bundle for `file` |
-| `audit_log` | Local JSONL file; defaults to `/var/log/cletus-connector/audit.jsonl` |
+| `audit_log` | Local JSONL file; defaults to `/var/log/eidonix-connector/audit.jsonl` |
 | `health_listen` | Empty by default; optional localhost address |
 | `routes` | Locally authorized routes, one `[[routes]]` entry per service |
 
@@ -76,7 +76,7 @@ extra_paths = [["POST", "/v1/responses"]]
 max_concurrency = 64
 
 [routes.upstream_headers]
-Authorization = "Bearer ${file:/etc/cletus-connector/secrets/inference-key}"
+Authorization = "Bearer ${file:/etc/eidonix-connector/secrets/inference-key}"
 ```
 
 Do not add wildcard routes to solve compatibility failures. Add the required exact method/path after reviewing the upstream's behavior. Default limits and effective profile contents are displayed by `check-config` and defined in `internal/config` and `internal/profiles`.
@@ -166,7 +166,7 @@ key_file = "<operator-selected-key-path>"
 
 Keep the SSE-C key backed up securely: losing it makes existing encrypted objects unreadable. SSE-C always requires HTTPS; `allow_insecure_http` cannot override that. Encryption mode and keys must match existing objects; a read-only check can detect a mismatch without changing them. Review backend-specific encryption defaults before use.
 
-Keys must be valid UTF-8, relative and free of traversal components, repeated slashes, backslashes and control characters. A relative key is at most 1023 bytes; local prefix plus relative key must fit within 1024 bytes. The `.cletus-connector/` component is reserved for local probes and cannot be accessed through gateway operations. Lists return relative keys and omit reserved/out-of-prefix entries.
+Keys must be valid UTF-8, relative and free of traversal components, repeated slashes, backslashes and control characters. A relative key is at most 1023 bytes; local prefix plus relative key must fit within 1024 bytes. The `.eidonix-connector/` component is reserved for local probes and cannot be accessed through gateway operations. Lists return relative keys and omit reserved/out-of-prefix entries.
 
 A positive hourly read budget reserves the announced read length before backend transfer. Failed or interrupted reads are conservatively charged; unused bytes are not refunded. Budgets and operation limits are local to each route runtime, reset with reload/restart, and are not shared across connector instances. Use aggregate monitoring for a fleet.
 

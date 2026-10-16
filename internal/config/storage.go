@@ -3,7 +3,7 @@ package config
 import (
 	"encoding/base64"
 	"fmt"
-	"github.com/eidonix-ai/cletus-connector/protocol"
+	"github.com/eidonix-ai/eidonix-connector/protocol"
 	"math"
 	"net"
 	"net/url"

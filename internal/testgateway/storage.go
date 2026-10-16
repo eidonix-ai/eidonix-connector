@@ -6,7 +6,7 @@ import (
 	"io"
 	"sync"
 
-	"github.com/eidonix-ai/cletus-connector/protocol"
+	"github.com/eidonix-ai/eidonix-connector/protocol"
 )
 
 // Storage sends a typed operation to an accepted storage-capable test session.

@@ -1,6 +1,6 @@
 # Implementation status
 
-The agreed scope is the standalone connector and a local test gateway. Production Cletus integration is outside this iteration. Module path: `github.com/eidonix-ai/cletus-connector`, Apache-2.0.
+The agreed scope is the standalone connector and a local test gateway. Production Cletus integration is outside this iteration. Module path: `github.com/eidonix-ai/eidonix-connector`, Apache-2.0.
 
 ## Implemented
 
@@ -35,5 +35,5 @@ Race, vet, fuzz, vulnerability, build and package results are recorded under [ci
 Run the release soak explicitly:
 
 ```sh
-CLETUS_SOAK_DURATION=45m go test ./internal/testgateway -run TestLongSSESoak -count=1 -timeout=50m
+EIDONIX_SOAK_DURATION=45m go test ./internal/testgateway -run TestLongSSESoak -count=1 -timeout=50m
 ```

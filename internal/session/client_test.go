@@ -10,7 +10,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"github.com/eidonix-ai/cletus-connector/protocol"
+	"github.com/eidonix-ai/eidonix-connector/protocol"
 	"github.com/gorilla/websocket"
 	"github.com/hashicorp/yamux"
 	"io"

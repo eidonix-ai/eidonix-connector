@@ -25,8 +25,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/eidonix-ai/cletus-connector/internal/config"
-	"github.com/eidonix-ai/cletus-connector/internal/testgateway"
+	"github.com/eidonix-ai/eidonix-connector/internal/config"
+	"github.com/eidonix-ai/eidonix-connector/internal/testgateway"
 )
 
 func main() {
@@ -92,7 +92,7 @@ func initialize(dir, upstream string) error {
 	if err != nil {
 		return err
 	}
-	template := &x509.Certificate{SerialNumber: serial, Subject: pkix.Name{CommonName: "Cletus local test gateway"}, NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().AddDate(1, 0, 0), IPAddresses: []net.IP{net.ParseIP("127.0.0.1"), net.ParseIP("::1")}, DNSNames: []string{"localhost"}, KeyUsage: x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}, BasicConstraintsValid: true, IsCA: true}
+	template := &x509.Certificate{SerialNumber: serial, Subject: pkix.Name{CommonName: "Eidonix connector local test gateway"}, NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().AddDate(1, 0, 0), IPAddresses: []net.IP{net.ParseIP("127.0.0.1"), net.ParseIP("::1")}, DNSNames: []string{"localhost"}, KeyUsage: x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}, BasicConstraintsValid: true, IsCA: true}
 	cert, err := x509.CreateCertificate(rand.Reader, template, template, tlsPub, tlsKey)
 	if err != nil {
 		return err
@@ -120,6 +120,6 @@ func initialize(dir, upstream string) error {
 			return err
 		}
 	}
-	fmt.Printf("Development keys and config created in %s\nRun test-gateway --state %q, then cletus-connector run --config %q\n", dir, dir, filepath.Join(dir, "config.toml"))
+	fmt.Printf("Development keys and config created in %s\nRun test-gateway --state %q, then eidonix-connector run --config %q\n", dir, dir, filepath.Join(dir, "config.toml"))
 	return nil
 }

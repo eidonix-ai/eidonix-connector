@@ -1,13 +1,13 @@
 [Unit]
-Description=Cletus inference connector
+Description=Eidonix connector
 After=network-online.target
 Wants=network-online.target
-ConditionPathExists=/etc/cletus-connector/config.toml
+ConditionPathExists=/etc/eidonix-connector/config.toml
 
 [Service]
-User=cletus-connector
-Group=cletus-connector
-ExecStart=/usr/bin/cletus-connector run --config /etc/cletus-connector/config.toml
+User=eidonix-connector
+Group=eidonix-connector
+ExecStart=/usr/bin/eidonix-connector run --config /etc/eidonix-connector/config.toml
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=always
 RestartSec=5
@@ -35,7 +35,7 @@ RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
 SystemCallFilter=~@privileged @resources @mount @module @raw-io @reboot @swap @debug @cpu-emulation @obsolete
-ReadWritePaths=/var/log/cletus-connector
+ReadWritePaths=/var/log/eidonix-connector
 UMask=0077
 IPAddressDeny=any
 
