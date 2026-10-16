@@ -29,7 +29,7 @@ func TestParseAllForms(t *testing.T) {
 	c, err := parse(t, `
 name: Example GPUs
 chat:
-  - name: cn3
+  - name: gpu1
     url: http://10.0.0.33:8000
     models: [model-a]
     max_concurrent_requests: 16
@@ -87,8 +87,8 @@ func TestEmptySectionsAndNoServices(t *testing.T) {
 	}
 }
 func TestUnknownSettingNamesLineAndService(t *testing.T) {
-	_, err := parse(t, "chat:\n  - name: cn3\n    url: http://10.0.0.5:8000\n    models: [a]\n    max_concurrency: 4\n")
-	want := `line 9: unknown setting "max_concurrency" in chat service "cn3" (expected one of: name, url, urls, api_path, models, max_concurrent_requests, max_requests_per_minute, idle_timeout, api_key)`
+	_, err := parse(t, "chat:\n  - name: gpu1\n    url: http://10.0.0.5:8000\n    models: [a]\n    max_concurrency: 4\n")
+	want := `line 9: unknown setting "max_concurrency" in chat service "gpu1" (expected one of: name, url, urls, api_path, models, max_concurrent_requests, max_requests_per_minute, idle_timeout, api_key)`
 	if err == nil || err.Error() != want {
 		t.Fatalf("got  %v\nwant %s", err, want)
 	}
@@ -103,10 +103,10 @@ func TestUnknownSettingNamesLineAndService(t *testing.T) {
 }
 func TestValidationErrors(t *testing.T) {
 	for _, tc := range []struct{ body, want string }{
-		{"chat:\n  - name: cn3\n    url: http://10.0.0.5:8000\n", `line 6: chat service "cn3": models is required`},
-		{"chat:\n  - name: cn3\n    models: [a]\n", `line 6: chat service "cn3": url is required`},
+		{"chat:\n  - name: gpu1\n    url: http://10.0.0.5:8000\n", `line 6: chat service "gpu1": models is required`},
+		{"chat:\n  - name: gpu1\n    models: [a]\n", `line 6: chat service "gpu1": url is required`},
 		{"chat:\n  - url: http://10.0.0.5:8000\n    models: [a]\n", `line 6: chat service #1: name is required`},
-		{"chat:\n  - name: CN3\n", `line 6: chat service #1: name "CN3" must be`},
+		{"chat:\n  - name: GPU1\n", `line 6: chat service #1: name "GPU1" must be`},
 		{"chat:\n  - name: a\n    url: http://10.0.0.5:8000\n    models: []\n", `line 8: chat service "a": models must be`},
 		{"chat:\n  - name: a\n    url: http://10.0.0.5:8000\n    models: [x, x]\n", `line 8: chat service "a": models lists "x" twice`},
 		{"chat:\n  - name: a\n    url: http://10.0.0.5:8000/v1\n    models: [x]\n", `line 7: chat service "a": url must not include a path; use api_path`},
@@ -244,11 +244,11 @@ func TestPermissionGate(t *testing.T) {
 	}
 }
 func TestSecretsListed(t *testing.T) {
-	c, err := parse(t, "chat:\n  - name: cn3\n    url: http://10.0.0.5:8000\n    models: [a]\n    api_key: sk-x\n")
+	c, err := parse(t, "chat:\n  - name: gpu1\n    url: http://10.0.0.5:8000\n    models: [a]\n    api_key: sk-x\n")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(c.Secrets(), ", "); got != "token, api_key (cn3)" {
+	if got := strings.Join(c.Secrets(), ", "); got != "token, api_key (gpu1)" {
 		t.Fatal(got)
 	}
 }

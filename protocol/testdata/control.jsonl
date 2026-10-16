@@ -1,8 +1,8 @@
 {"v":2,"type":"auth","token":"cxn_abcdefghijklmnop_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}
 {"v":2,"type":"auth_ok","session_id":"s-1","org":"Example Org"}
 {"v":2,"type":"auth_failed","reason":"invalid_token"}
-{"v":2,"type":"hello","instance_id":"00000000-0000-4000-8000-000000000001","version":"0.2.0","os":"linux","arch":"amd64","capabilities":["inference/1","storage/1"],"services":[{"name":"cn3","type":"chat","models":["model-a"],"models_any":false,"max_concurrent_requests":32,"healthy":true},{"name":"embed","type":"embeddings","models":[],"models_any":true,"max_concurrent_requests":32,"healthy":false},{"name":"files","type":"storage","models":[],"models_any":false,"max_concurrent_requests":16,"healthy":false,"storage":{"max_key_bytes":1017,"max_object_bytes":5368709120,"encryption":"sse-c"}}]}
-{"v":2,"type":"hello_ack","accepted":["cn3","files"],"rejected":[{"name":"embed","reason":"unknown_service"}],"limits":{"max_streams":64}}
-{"v":2,"type":"status","services":[{"name":"cn3","healthy":true,"in_flight":2,"models":["model-a"]},{"name":"embed","healthy":false,"in_flight":0,"models":[]}],"uptime_s":60}
+{"v":2,"type":"hello","instance_id":"00000000-0000-4000-8000-000000000001","version":"0.2.0","os":"linux","arch":"amd64","capabilities":["inference/1","storage/1"],"services":[{"name":"gpu1","type":"chat","models":["model-a"],"models_any":false,"max_concurrent_requests":32,"healthy":true},{"name":"embed","type":"embeddings","models":[],"models_any":true,"max_concurrent_requests":32,"healthy":false},{"name":"files","type":"storage","models":[],"models_any":false,"max_concurrent_requests":16,"healthy":false,"storage":{"max_key_bytes":1017,"max_object_bytes":5368709120,"encryption":"sse-c"}}]}
+{"v":2,"type":"hello_ack","accepted":["gpu1","files"],"rejected":[{"name":"embed","reason":"unknown_service"}],"limits":{"max_streams":64}}
+{"v":2,"type":"status","services":[{"name":"gpu1","healthy":true,"in_flight":2,"models":["model-a"]},{"name":"embed","healthy":false,"in_flight":0,"models":[]}],"uptime_s":60}
 {"v":2,"type":"ping"}
 {"v":2,"type":"close","reason":"revoked"}

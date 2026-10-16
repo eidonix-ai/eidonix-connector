@@ -54,7 +54,7 @@ Control uses newline-delimited JSON, at most 64 KiB per line including the newli
 A `hello` service is:
 
 ```json
-{"name":"cn3","type":"chat","models":["model-a"],"models_any":false,"max_concurrent_requests":32,"healthy":true}
+{"name":"gpu1","type":"chat","models":["model-a"],"models_any":false,"max_concurrent_requests":32,"healthy":true}
 ```
 
 `type` is one of `chat`, `anthropic`, `embeddings`, `rerank`, `transcription`, `speech`, `image`, `document`, `conversion`, `realtime`, `storage`, `custom`; the type fixes exactly which requests the connector accepts (see [configuration](CONFIG.md)). `models` is the list of names callers may use, always present (empty for types without models). `models_any:true` means the owner allows any model; `models` is then the list discovered from the server. `max_concurrent_requests` is the per-service limit the connector enforces; the gateway should enforce it per service as well. A `storage` service adds:

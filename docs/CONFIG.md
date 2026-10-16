@@ -16,7 +16,7 @@ the running configuration.
 
 - **Unknown or misspelt settings stop the connector**, naming the line, the
   service and the settings expected there, for example
-  `line 9: unknown setting "max_concurrency" in chat service "cn3" (expected one of: name, url, urls, api_path, models, max_concurrent_requests, max_requests_per_minute, idle_timeout, api_key)`.
+  `line 9: unknown setting "max_concurrency" in chat service "gpu1" (expected one of: name, url, urls, api_path, models, max_concurrent_requests, max_requests_per_minute, idle_timeout, api_key)`.
   Every other problem also names its line and service.
 - **Services are grouped by type.** A type section may be absent, empty
   (`chat:`), `[]` or `null`; a file with no services at all is valid: the

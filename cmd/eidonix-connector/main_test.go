@@ -83,7 +83,7 @@ upstream:
   token: ` + secrets[4] + `
   public_keys: [AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=]
 chat:
-  - name: cn3
+  - name: gpu1
     url: http://10.0.0.5:8000   # the big card
     models: [model-a]
     api_key: ` + secrets[0] + `

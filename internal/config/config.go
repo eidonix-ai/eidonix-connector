@@ -169,7 +169,7 @@ func groupName(gid int) string {
 }
 
 // Secrets lists the secret settings that are set, for check output, e.g.
-// "token", "api_key (cn3)".
+// "token", "api_key (gpu1)".
 func (c *Config) Secrets() []string {
 	out := []string{}
 	if c.Upstream.Token != "" {

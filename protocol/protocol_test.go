@@ -165,12 +165,12 @@ func TestControlGolden(t *testing.T) {
 		AuthResult{V: Version, Type: MessageAuthOK, SessionID: "s-1", Org: "Example Org"},
 		AuthResult{V: Version, Type: MessageAuthFailed, Reason: "invalid_token"},
 		Hello{V: Version, Type: MessageHello, InstanceID: "00000000-0000-4000-8000-000000000001", Version: "0.2.0", OS: "linux", Arch: "amd64", Capabilities: []string{CapabilityInference, CapabilityStorage}, Services: []Service{
-			{Name: "cn3", Type: TypeChat, Models: []string{"model-a"}, MaxConcurrentRequests: 32, Healthy: true},
+			{Name: "gpu1", Type: TypeChat, Models: []string{"model-a"}, MaxConcurrentRequests: 32, Healthy: true},
 			{Name: "embed", Type: TypeEmbeddings, Models: []string{}, ModelsAny: true, MaxConcurrentRequests: 32},
 			{Name: "files", Type: TypeStorage, Models: []string{}, MaxConcurrentRequests: 16, Storage: &StorageService{MaxKeyBytes: 1017, MaxObjectBytes: MaxStorageObjectBytes, Encryption: "sse-c"}},
 		}},
-		HelloAck{V: Version, Type: MessageHelloAck, Accepted: []string{"cn3", "files"}, Rejected: []Rejected{{Name: "embed", Reason: "unknown_service"}}, Limits: Limits{MaxStreams: 64}},
-		Status{V: Version, Type: MessageStatus, Services: []ServiceStatus{{Name: "cn3", Healthy: true, InFlight: 2, Models: []string{"model-a"}}, {Name: "embed", Models: []string{}}}, UptimeS: 60},
+		HelloAck{V: Version, Type: MessageHelloAck, Accepted: []string{"gpu1", "files"}, Rejected: []Rejected{{Name: "embed", Reason: "unknown_service"}}, Limits: Limits{MaxStreams: 64}},
+		Status{V: Version, Type: MessageStatus, Services: []ServiceStatus{{Name: "gpu1", Healthy: true, InFlight: 2, Models: []string{"model-a"}}, {Name: "embed", Models: []string{}}}, UptimeS: 60},
 		Control{V: Version, Type: MessagePing},
 		Control{V: Version, Type: MessageClose, Reason: "revoked"},
 	} {

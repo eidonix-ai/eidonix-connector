@@ -79,7 +79,7 @@ func TestRedacted(t *testing.T) {
 	secrets := []string{testToken, "sk-SECRET-api", "AKIA-SECRET-access", "SECRET-secret-key", testKey}
 	src := upstreamYAML() + `# a comment that must survive
 chat:
-  - name: cn3
+  - name: gpu1
     url: http://10.0.0.5:8000
     models: [a]
     api_key: sk-SECRET-api   # line comment
