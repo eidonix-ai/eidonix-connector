@@ -3,7 +3,7 @@
 This directory holds recorded verification runs for a release. Only recorded
 runs count as evidence; a workflow definition is not evidence that it ran.
 
-The v0.1 (cletus-connector) logs were removed with the v0.2 rename: they
+The v0.1 logs were removed with the v0.2 rename: they
 certified a source revision, a package name and a configuration format that no
 longer exist. They remain in the repository history.
 
