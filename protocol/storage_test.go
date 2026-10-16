@@ -11,7 +11,6 @@ import (
 	"github.com/hashicorp/yamux"
 	"io"
 	"net"
-	"os"
 	"runtime"
 	"strings"
 	"testing"
@@ -20,12 +19,13 @@ import (
 
 func int64ptr(n int64) *int64 { return &n }
 func storageHeader(op string) StreamHeader {
-	return StreamHeader{V: 1, Route: "files", Kind: "storage", RequestID: "r-1", Op: op, Key: EncodeStorageKey("a"), Size: int64ptr(-1), Max: 1000}
+	return StreamHeader{V: Version, Service: "files", Kind: "storage", RequestID: "r-1", Op: op, Key: EncodeStorageKey("a"), Size: int64ptr(-1), Max: 1000}
 }
 func TestStorageWorstCaseGolden(t *testing.T) {
 	key := EncodeStorageKey(strings.Repeat("x", 1023))
 	for _, op := range []string{"copy", "list"} {
-		h := StreamHeader{V: 1, Route: strings.Repeat("r", 40), Kind: "storage", RequestID: strings.Repeat("i", 64), Op: op}
+		meta := strings.Repeat("m", MaxStreamMetadataBytes)
+		h := StreamHeader{V: Version, Service: strings.Repeat("r", 40), Kind: "storage", RequestID: strings.Repeat("i", 64), OrgID: meta, OrgSlug: meta, UserKeyID: meta, Op: op}
 		if op == "copy" {
 			h.SrcKey = key
 			h.DstKey = key
@@ -42,10 +42,7 @@ func TestStorageWorstCaseGolden(t *testing.T) {
 		if b.Len() > MaxHeaderBytes {
 			t.Fatal("header budget exceeded")
 		}
-		golden, e := os.ReadFile("testdata/storage-" + op + "-header.json")
-		if e != nil {
-			t.Fatal(e)
-		}
+		golden := readGolden(t, "storage-"+op+"-header.json", b.Bytes())
 		if !bytes.Equal(golden, b.Bytes()) {
 			t.Fatalf("%s golden differs", op)
 		}
@@ -59,7 +56,7 @@ func TestStorageWorstCaseGolden(t *testing.T) {
 	}
 }
 func TestUnknownKindParses(t *testing.T) {
-	h, e := ReadStreamHeader(bufio.NewReader(strings.NewReader(`{"v":1,"route":"r","kind":"future/1","request_id":"r","endpoint":"http://evil"}` + "\n")))
+	h, e := ReadStreamHeader(bufio.NewReader(strings.NewReader(`{"v":2,"service":"r","kind":"future/1","request_id":"r","endpoint":"http://evil"}` + "\n")))
 	if e != nil || h.Kind != "future/1" {
 		t.Fatal(h, e)
 	}
@@ -67,13 +64,13 @@ func TestUnknownKindParses(t *testing.T) {
 	if e := WriteStorageResult(&b, StorageErrorResult("unsupported_kind"), ""); e != nil {
 		t.Fatal(e)
 	}
-	want := `{"v":1,"ok":false,"error":{"code":"unsupported_kind","message":"unsupported stream kind"}}` + "\n"
+	want := `{"v":2,"ok":false,"error":{"code":"unsupported_kind","message":"unsupported stream kind"}}` + "\n"
 	if b.String() != want {
 		t.Fatal(b.String())
 	}
 }
 func TestStorageKeyValidation(t *testing.T) {
-	for _, key := range []string{"../x", "a/../x", "/x", "a//b", "a\\b", "a\x00b", "a\x7fb", "a\u0085b", ".cletus-connector", ".cletus-connector/x", string([]byte{255})} {
+	for _, key := range []string{"../x", "a/../x", "/x", "a//b", "a\\b", "a\x00b", "a\x7fb", "a\u0085b", ".eidonix-connector", ".eidonix-connector/x", string([]byte{255})} {
 		if _, e := DecodeStorageKey(EncodeStorageKey(key), 7, false); e == nil {
 			t.Fatalf("accepted%q", key)
 		}
@@ -163,7 +160,7 @@ func TestStorageTrailerRequiredAndLimits(t *testing.T) {
 	}
 }
 func TestStorageResultBounds(t *testing.T) {
-	r := StorageResult{V: 1, OK: true, Size: int64ptr(1), ETag: "etag", ContentType: "text/plain", LastModified: "2026-10-11T00:00:00Z"}
+	r := StorageResult{V: Version, OK: true, Size: int64ptr(1), ETag: "etag", ContentType: "text/plain", LastModified: "2026-10-11T00:00:00Z"}
 	var b bytes.Buffer
 	if e := WriteStorageResult(&b, r, "head"); e != nil {
 		t.Fatal(e)
@@ -175,11 +172,11 @@ func TestStorageResultBounds(t *testing.T) {
 	if e := WriteStorageResult(&b, r, "head"); e == nil {
 		t.Fatal("long etag accepted")
 	}
-	r = StorageResult{V: 1, OK: true, Objects: make([]StorageObject, 1001)}
+	r = StorageResult{V: Version, OK: true, Objects: make([]StorageObject, 1001)}
 	if e := WriteStorageResult(&b, r, "list"); e == nil {
 		t.Fatal("1001 entries accepted")
 	}
-	r = StorageResult{V: 1, OK: true}
+	r = StorageResult{V: Version, OK: true}
 	b.Reset()
 	if e := WriteStorageResult(&b, r, "list"); e != nil {
 		t.Fatal(e)
@@ -187,7 +184,7 @@ func TestStorageResultBounds(t *testing.T) {
 	if !strings.Contains(b.String(), `"objects":[]`) || !strings.Contains(b.String(), `"truncated":false`) {
 		t.Fatal(b.String())
 	}
-	for _, line := range []string{`{"v":1}`, `{"ok":true}`, `{"v":1,"ok":false,"error":{"code":"invented","message":"x"}}`} {
+	for _, line := range []string{`{"v":2}`, `{"ok":true}`, `{"v":2,"ok":false,"error":{"code":"invented","message":"x"}}`} {
 		if _, e := ReadStorageResult(bufio.NewReader(strings.NewReader(line+"\n")), "get"); e == nil {
 			t.Fatal("invalid result accepted")
 		}
@@ -243,7 +240,7 @@ func TestYamuxPutHalfCloseStillReadsResult(t *testing.T) {
 			errCh <- errors.New("bad body")
 			return
 		}
-		errCh <- WriteStorageResult(s, StorageResult{V: 1, OK: true, Size: int64ptr(3), ETag: "etag"}, "put")
+		errCh <- WriteStorageResult(s, StorageResult{V: Version, OK: true, Size: int64ptr(3), ETag: "etag"}, "put")
 	}()
 	s, e := client.OpenStream()
 	if e != nil {
@@ -286,7 +283,7 @@ func FuzzStorageTrailer(f *testing.F) {
 	f.Fuzz(func(t *testing.T, b []byte) { ReadStorageTrailer(bufio.NewReader(bytes.NewReader(b))) })
 }
 func FuzzStorageResult(f *testing.F) {
-	f.Add([]byte(`{"v":1,"ok":true,"objects":[],"truncated":false}`+"\n"), "list")
+	f.Add([]byte(`{"v":2,"ok":true,"objects":[],"truncated":false}`+"\n"), "list")
 	f.Fuzz(func(t *testing.T, b []byte, op string) { ReadStorageResult(bufio.NewReader(bytes.NewReader(b)), op) })
 }
 func FuzzStorageBody(f *testing.F) {
@@ -308,12 +305,12 @@ func TestStorageLineSizeCaps(t *testing.T) {
 		op  string
 		max int
 	}{{"get", MaxStorageResultBytes}, {"list", MaxStorageListResultBytes}} {
-		line := `{"v":1,"ok":false,"error":{"code":"busy","message":"x"},"ignored":"` + strings.Repeat("x", test.max) + `"}` + "\n"
+		line := `{"v":2,"ok":false,"error":{"code":"busy","message":"x"},"ignored":"` + strings.Repeat("x", test.max) + `"}` + "\n"
 		if _, e := ReadStorageResult(bufio.NewReader(strings.NewReader(line)), test.op); e == nil {
 			t.Fatal("oversized result accepted")
 		}
 	}
-	line := `{"v":1,"ok":true,"truncated":false}` + "\n"
+	line := `{"v":2,"ok":true,"truncated":false}` + "\n"
 	if _, e := ReadStorageResult(bufio.NewReader(strings.NewReader(line)), "list"); e == nil {
 		t.Fatal("missing objects accepted")
 	}
@@ -322,7 +319,7 @@ func TestStorageLineSizeCaps(t *testing.T) {
 func TestStorageManyTinyObjectsBounded(t *testing.T) {
 	objects := `[` + strings.Repeat(`{},`, 300000) + `{}]`
 	for _, field := range []string{`"objects":` + objects, `"objects":` + objects + `,"objects":[]`, `"Objects":` + objects} {
-		line := `{"v":1,"ok":false,"error":{"code":"busy","message":"busy"},` + field + `}` + "\n"
+		line := `{"v":2,"ok":false,"error":{"code":"busy","message":"busy"},` + field + `}` + "\n"
 		if len(line) > MaxStorageListResultBytes {
 			t.Fatal("test exceeds line cap")
 		}
@@ -331,7 +328,7 @@ func TestStorageManyTinyObjectsBounded(t *testing.T) {
 		}
 	}
 	// The whole line is bounded, and array decoding must stay bounded too.
-	line := `{"v":1,"ok":true,"objects":` + objects + `,"truncated":false}` + "\n"
+	line := `{"v":2,"ok":true,"objects":` + objects + `,"truncated":false}` + "\n"
 	var stats runtime.MemStats
 	runtime.ReadMemStats(&stats)
 	before := stats.TotalAlloc

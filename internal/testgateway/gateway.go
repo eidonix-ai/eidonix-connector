@@ -1,4 +1,4 @@
-// Package testgateway provides a development peer for connector integration tests.
+// Package testgateway provides a development peer (protocol v2) for connector integration tests.
 // It is deliberately not a production gateway or a tenant authorization service.
 package testgateway
 
@@ -27,28 +27,32 @@ import (
 const maxBody = 256 << 20
 
 type Gateway struct {
-	token, tokenID, keyID string
-	key                   ed25519.PrivateKey
-	mu                    sync.Mutex
-	sessions              map[*peer]bool
-	closed                bool
+	token    string
+	key      ed25519.PrivateKey
+	mu       sync.Mutex
+	sessions map[*peer]bool
+	closed   bool
+	// AuthAttempts counts auth messages received on the control stream.
+	AuthAttempts atomic.Int64
+	// Caller metadata stamped on every stream header this gateway opens.
+	OrgID, OrgSlug, UserKeyID string
 }
 type peer struct {
 	mux          *yamux.Session
-	routes       map[string]protocol.Route
+	services     map[string]protocol.Service
 	slots        chan struct{}
 	capabilities map[string]bool
+	lastStatus   atomic.Pointer[protocol.Status]
 }
 
-func New(token, keyID string, key ed25519.PrivateKey) (*Gateway, error) {
-	id, _, err := protocol.ParseToken(token)
-	if err != nil {
+func New(token string, key ed25519.PrivateKey) (*Gateway, error) {
+	if _, _, err := protocol.ParseToken(token); err != nil {
 		return nil, err
 	}
-	if len(key) != ed25519.PrivateKeySize || keyID == "" {
+	if len(key) != ed25519.PrivateKeySize {
 		return nil, errors.New("invalid signing key")
 	}
-	return &Gateway{token: token, tokenID: id, keyID: keyID, key: key, sessions: make(map[*peer]bool)}, nil
+	return &Gateway{token: token, key: key, sessions: make(map[*peer]bool), OrgID: "1", OrgSlug: "local-test", UserKeyID: "1"}, nil
 }
 func (g *Gateway) Close() error {
 	g.mu.Lock()
@@ -59,24 +63,30 @@ func (g *Gateway) Close() error {
 	}
 	return nil
 }
+
+// ServeHTTP serves the connector session endpoint (the token arrives on the
+// control stream, after the gateway has proved its identity) and, behind the
+// local bearer token, /status and /services/<name>/<path> for development use.
 func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == protocol.SessionPath {
+		g.connect(w, r)
+		return
+	}
 	if subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), []byte("Bearer "+g.token)) != 1 {
 		http.Error(w, "unauthorized", 401)
 		return
 	}
 	switch {
-	case r.URL.Path == "/v1/connectors/session":
-		g.connect(w, r)
 	case r.URL.Path == "/status":
 		g.mu.Lock()
 		n := len(g.sessions)
 		g.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]int{"sessions": n})
-	case strings.HasPrefix(r.URL.Path, "/routes/"):
-		parts := strings.SplitN(strings.TrimPrefix(r.URL.Path, "/routes/"), "/", 2)
+	case strings.HasPrefix(r.URL.Path, "/services/"):
+		parts := strings.SplitN(strings.TrimPrefix(r.URL.Path, "/services/"), "/", 2)
 		if len(parts) != 2 || parts[0] == "" {
-			http.Error(w, "route path required", 400)
+			http.Error(w, "service path required", 400)
 			return
 		}
 		// Preserve escaped paths: the connector, not this harness, validates them.
@@ -84,7 +94,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		req.URL.Path = "/" + parts[1]
 		req.URL.RawPath = ""
 		if r.URL.RawPath != "" {
-			raw := strings.SplitN(strings.TrimPrefix(r.URL.EscapedPath(), "/routes/"), "/", 2)
+			raw := strings.SplitN(strings.TrimPrefix(r.URL.EscapedPath(), "/services/"), "/", 2)
 			if len(raw) == 2 {
 				req.URL.RawPath = "/" + raw[1]
 			}
@@ -102,7 +112,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		defer resp.Body.Close()
-		for _, h := range []string{"Content-Type", "Content-Length", "X-Request-Id", "Retry-After", "X-Cletus-Connector-Error"} {
+		for _, h := range []string{"Content-Type", "Content-Length", "X-Request-Id", "Retry-After", protocol.HeaderError} {
 			if v := resp.Header.Values(h); len(v) > 0 {
 				w.Header()[h] = v
 			}
@@ -143,17 +153,15 @@ func (g *Gateway) connect(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unsupported protocol", 426)
 		return
 	}
-	nonce := r.Header.Get("X-Cletus-Connector-Nonce")
+	nonce := r.Header.Get(protocol.HeaderNonce)
 	b, err := base64.StdEncoding.DecodeString(nonce)
-	instance := r.Header.Get("X-Cletus-Connector-Instance")
-	if err != nil || len(b) != 32 || len(instance) != 36 {
+	instance := r.Header.Get(protocol.HeaderInstance)
+	if err != nil || len(b) != 32 || len(instance) != 36 || r.Header.Get("Authorization") != "" {
 		http.Error(w, "invalid handshake", 400)
 		return
 	}
-	ts := time.Now().UTC().Format(time.RFC3339)
-	h := http.Header{"X-Cletus-Server-Time": {ts}, "X-Cletus-Server-Key-Id": {g.keyID}, "X-Cletus-Server-Signature": {protocol.SignIdentity(g.key, nonce, g.tokenID, instance, ts)}}
 	up := websocket.Upgrader{Subprotocols: []string{protocol.Subprotocol}, HandshakeTimeout: 10 * time.Second}
-	ws, err := up.Upgrade(w, r, h)
+	ws, err := up.Upgrade(w, r, protocol.IdentityHeaders(g.key, nonce, instance, time.Now()))
 	if err != nil {
 		return
 	}
@@ -182,32 +190,45 @@ func (g *Gateway) connect(w http.ResponseWriter, r *http.Request) {
 	}
 	control.SetDeadline(time.Now().Add(10 * time.Second))
 	br := bufio.NewReader(control)
-	var hello protocol.Message
-	if protocol.ReadJSONLine(br, protocol.MaxControlBytes, &hello) != nil || hello.V != 1 || hello.Type != "hello" || hello.InstanceID != instance || len(hello.Routes) > 128 {
+	env, err := protocol.ReadMessage(br)
+	var auth protocol.Auth
+	if err != nil || env.Type != protocol.MessageAuth || env.Decode(&auth) != nil {
 		return
 	}
-	p := &peer{mux: mux, routes: make(map[string]protocol.Route), slots: make(chan struct{}, 64), capabilities: make(map[string]bool)}
+	g.AuthAttempts.Add(1)
+	if subtle.ConstantTimeCompare([]byte(auth.Token), []byte(g.token)) != 1 {
+		protocol.WriteMessage(control, protocol.AuthResult{V: protocol.Version, Type: protocol.MessageAuthFailed, Reason: "invalid_token"})
+		return
+	}
+	id, _ := protocol.NewInstanceID()
+	if protocol.WriteMessage(control, protocol.AuthResult{V: protocol.Version, Type: protocol.MessageAuthOK, SessionID: id, Org: "local-test"}) != nil {
+		return
+	}
+	var hello protocol.Hello
+	if env, err = protocol.ReadMessage(br); err != nil || env.Type != protocol.MessageHello || env.Decode(&hello) != nil || hello.InstanceID != instance || len(hello.Services) > 128 {
+		return
+	}
+	p := &peer{mux: mux, services: make(map[string]protocol.Service), slots: make(chan struct{}, 64), capabilities: make(map[string]bool)}
 	for _, capability := range hello.Capabilities {
 		p.capabilities[capability] = true
 	}
-	var rejected []protocol.RejectedRoute
-	ids := make([]string, 0, len(hello.Routes))
-	for _, route := range hello.Routes {
-		if route.ID == "" || len(route.ID) > 40 {
+	rejected := []protocol.Rejected{}
+	names := make([]string, 0, len(hello.Services))
+	for _, service := range hello.Services {
+		if !protocol.ValidServiceName(service.Name) {
 			return
 		}
-		if _, ok := p.routes[route.ID]; ok {
+		if _, ok := p.services[service.Name]; ok {
 			return
 		}
-		if route.Type == "object_storage" && !p.capabilities[protocol.CapabilityStorage] {
-			rejected = append(rejected, protocol.RejectedRoute{ID: route.ID, Reason: "storage_capability_missing"})
+		if service.Type == protocol.TypeStorage && !p.capabilities[protocol.CapabilityStorage] {
+			rejected = append(rejected, protocol.Rejected{Name: service.Name, Reason: "storage_capability_missing"})
 			continue
 		}
-		p.routes[route.ID] = route
-		ids = append(ids, route.ID)
+		p.services[service.Name] = service
+		names = append(names, service.Name)
 	}
-	id, _ := protocol.NewInstanceID()
-	if protocol.WriteJSONLine(control, protocol.MaxControlBytes, protocol.Message{V: 1, Type: "hello_ack", SessionID: id, Org: "local-test", AcceptedRoutes: ids, RejectedRoutes: rejected, Limits: protocol.Limits{MaxStreams: 64}}) != nil {
+	if protocol.WriteMessage(control, protocol.HelloAck{V: protocol.Version, Type: protocol.MessageHelloAck, Accepted: names, Rejected: rejected, Limits: protocol.Limits{MaxStreams: 64}}) != nil {
 		return
 	}
 	control.SetDeadline(time.Time{})
@@ -244,7 +265,7 @@ func (g *Gateway) connect(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 				control.SetWriteDeadline(time.Now().Add(10 * time.Second))
-				if protocol.WriteJSONLine(control, protocol.MaxControlBytes, protocol.Message{V: 1, Type: "ping"}) != nil {
+				if protocol.WriteMessage(control, protocol.Control{V: protocol.Version, Type: protocol.MessagePing}) != nil {
 					mux.Close()
 					return
 				}
@@ -253,31 +274,38 @@ func (g *Gateway) connect(w http.ResponseWriter, r *http.Request) {
 	}()
 	for {
 		control.SetReadDeadline(time.Now().Add(45 * time.Second))
-		var m protocol.Message
-		if protocol.ReadJSONLine(br, protocol.MaxControlBytes, &m) != nil || m.V != 1 {
+		m, err := protocol.ReadMessage(br)
+		if err != nil {
 			return
 		}
-		if m.Type == "pong" {
+		switch m.Type {
+		case protocol.MessagePong:
 			lastPong.Store(time.Now().UnixNano())
-		}
-		if m.Type != "status" && m.Type != "pong" {
+		case protocol.MessageStatus:
+			var status protocol.Status
+			if m.Decode(&status) != nil {
+				return
+			}
+			p.lastStatus.Store(&status)
+		default:
 			return
 		}
 	}
 }
-func (g *Gateway) open(ctx context.Context, route, kind string) (net.Conn, func(), error) {
+func (g *Gateway) open(ctx context.Context, service, kind string) (net.Conn, func(), error) {
 	id, _ := protocol.NewInstanceID()
-	return g.openHeader(ctx, protocol.StreamHeader{V: 1, Route: route, Kind: kind, RequestID: id})
+	return g.openHeader(ctx, protocol.StreamHeader{V: protocol.Version, Service: service, Kind: kind, RequestID: id})
 }
 func (g *Gateway) openHeader(ctx context.Context, header protocol.StreamHeader) (net.Conn, func(), error) {
 	g.mu.Lock()
+	header.OrgID, header.OrgSlug, header.UserKeyID = g.OrgID, g.OrgSlug, g.UserKeyID
 	var chosen *peer
 	for p := range g.sessions {
-		if r, ok := p.routes[header.Route]; ok && !p.mux.IsClosed() {
-			if header.Kind == "storage" && (r.Type != "object_storage" || !p.capabilities[protocol.CapabilityStorage]) {
+		if r, ok := p.services[header.Service]; ok && !p.mux.IsClosed() {
+			if header.Kind == "storage" && (r.Type != protocol.TypeStorage || !p.capabilities[protocol.CapabilityStorage]) {
 				continue
 			}
-			if header.Kind != "storage" && r.Type == "object_storage" {
+			if header.Kind != "storage" && r.Type == protocol.TypeStorage {
 				continue
 			}
 			if chosen == nil || len(p.slots) < len(chosen.slots) {
@@ -312,9 +340,9 @@ func (g *Gateway) openHeader(ctx context.Context, header protocol.StreamHeader) 
 	return c, closeFn, nil
 }
 
-// RoundTrip sends one request to a locally advertised route. Close the response body.
-func (g *Gateway) RoundTrip(req *http.Request, route string) (*http.Response, error) {
-	c, closeFn, err := g.open(req.Context(), route, "http")
+// RoundTrip sends one request to a locally advertised service. Close the response body.
+func (g *Gateway) RoundTrip(req *http.Request, service string) (*http.Response, error) {
+	c, closeFn, err := g.open(req.Context(), service, "http")
 	if err != nil {
 		return nil, err
 	}
@@ -458,8 +486,8 @@ func (c *idleConn) Write(b []byte) (int, error) {
 	}
 	return n, e
 }
-func (g *Gateway) websocket(w http.ResponseWriter, original, req *http.Request, route string) {
-	c, finish, err := g.open(req.Context(), route, "websocket")
+func (g *Gateway) websocket(w http.ResponseWriter, original, req *http.Request, service string) {
+	c, finish, err := g.open(req.Context(), service, "websocket")
 	if err != nil {
 		http.Error(w, "connector offline", 502)
 		return
@@ -521,4 +549,30 @@ func (g *Gateway) websocket(w http.ResponseWriter, original, req *http.Request, 
 	ws.Close()
 	finish()
 	<-done
+}
+
+// Services returns the services the newest live session advertised in hello.
+func (g *Gateway) Services() []protocol.Service {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	out := []protocol.Service{}
+	for p := range g.sessions {
+		out = out[:0]
+		for _, s := range p.services {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// LastStatus returns the most recent status message of any live session.
+func (g *Gateway) LastStatus() *protocol.Status {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for p := range g.sessions {
+		if s := p.lastStatus.Load(); s != nil {
+			return s
+		}
+	}
+	return nil
 }

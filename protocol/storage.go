@@ -36,12 +36,17 @@ const (
 	MaxStorageParts                   = 10000
 )
 
-type StorageRoute struct {
+// StorageService is the storage block of an advertised storage service.
+// Encryption is the owner's choice: none, sse-s3, sse-kms or sse-c.
+type StorageService struct {
 	MaxKeyBytes    int    `json:"max_key_bytes"`
 	MaxObjectBytes int64  `json:"max_object_bytes"`
 	Encryption     string `json:"encryption"`
-	Location       string `json:"location,omitempty"`
 }
+
+// ReservedKeySegment is the first key segment reserved for connector-local probes.
+const ReservedKeySegment = ".eidonix-connector"
+
 type StorageObject struct {
 	Key          string `json:"key"`
 	Size         int64  `json:"size"`
@@ -70,17 +75,12 @@ type StorageError struct {
 
 func (e *StorageError) Error() string { return e.Code }
 
-var storageMessages = map[string]string{
-	"invalid_request": "invalid storage request", "invalid_key": "invalid object key", "key_too_long": "object key is too long", "not_found": "object not found", "precondition_failed": "object changed", "too_large": "object exceeds size limit", "size_mismatch": "object size does not match", "checksum_mismatch": "object checksum does not match", "forbidden": "storage refused the request", "busy": "storage route is busy", "rate_limited": "storage rate limit exceeded", "backend_unavailable": "storage is unavailable", "backend_invalid": "invalid storage response", "timeout": "storage operation timed out", "route_not_found": "route not found", "wrong_route_type": "wrong route type", "unsupported_kind": "unsupported stream kind", "internal": "internal connector error",
-}
-
+// NewStorageError returns the closed-set error for code ("internal" if unknown).
 func NewStorageError(code string) *StorageError {
-	message, ok := storageMessages[code]
-	if !ok {
+	if !ValidErrorCode(code) {
 		code = "internal"
-		message = storageMessages[code]
 	}
-	return &StorageError{code, message}
+	return &StorageError{code, ErrorMessage(code)}
 }
 func StorageErrorResult(code string) StorageResult {
 	return StorageResult{V: Version, Error: NewStorageError(code)}
@@ -110,7 +110,7 @@ func ValidateRelativeKey(key string, prefixBytes int, allowEmpty bool) error {
 		}
 	}
 	parts := strings.Split(key, "/")
-	if parts[0] == ".cletus-connector" {
+	if parts[0] == ReservedKeySegment {
 		return NewStorageError("invalid_key")
 	}
 	for _, part := range parts {
@@ -121,7 +121,6 @@ func ValidateRelativeKey(key string, prefixBytes int, allowEmpty bool) error {
 	return nil
 }
 
-var storageRoutePattern = regexp.MustCompile(`^[a-z0-9-]{1,40}$`)
 var storageRequestPattern = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,64}$`)
 var storageTokenPattern = regexp.MustCompile(`^[A-Za-z0-9_-]*$`)
 
@@ -149,7 +148,7 @@ func mediaType(s string) bool {
 }
 func validRange(r []int64) bool { return len(r) == 2 && r[0] >= 0 && r[1] >= r[0] }
 func ValidateStorageHeader(h StreamHeader, maxObject int64, prefixBytes int) error {
-	if h.V != Version || h.Kind != "storage" || !storageRoutePattern.MatchString(h.Route) || !storageRequestPattern.MatchString(h.RequestID) || maxObject < 0 || maxObject > MaxStorageObjectBytes {
+	if h.V != Version || h.Kind != "storage" || !ValidServiceName(h.Service) || !storageRequestPattern.MatchString(h.RequestID) || maxObject < 0 || maxObject > MaxStorageObjectBytes {
 		return NewStorageError("invalid_request")
 	}
 	keys := []string{}
@@ -346,7 +345,7 @@ func ValidateStorageResult(r StorageResult, op string) error {
 		if r.Error == nil {
 			return invalid()
 		}
-		if _, ok := storageMessages[r.Error.Code]; !ok || !printable(r.Error.Message, MaxStorageErrorMessageBytes) {
+		if !ValidErrorCode(r.Error.Code) || !printable(r.Error.Message, MaxStorageErrorMessageBytes) {
 			return invalid()
 		}
 		return nil

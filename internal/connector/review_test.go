@@ -34,7 +34,7 @@ func reviewRequest(t *testing.T, x *Connector, request string) (*http.Response, 
 	done := make(chan struct{})
 	go func() { defer close(done); x.ServeStream(context.Background(), a) }()
 	go func() {
-		protocol.WriteStreamHeader(b, protocol.StreamHeader{V: 1, Route: "chat", Kind: "http"})
+		protocol.WriteStreamHeader(b, protocol.StreamHeader{V: protocol.Version, Service: "chat", Kind: "http"})
 		io.WriteString(b, request)
 	}()
 	resp, err := http.ReadResponse(bufio.NewReader(b), nil)
@@ -71,7 +71,7 @@ func TestIdleBeforeResponseHeadersReturns504(t *testing.T) {
 	}
 	defer x.Close()
 	resp, _ := reviewRequest(t, x, "GET /v1/models HTTP/1.1\r\nHost: ignored\r\n\r\n")
-	if resp.StatusCode != 504 || resp.Header.Get("X-Cletus-Connector-Error") != "upstream_timeout" {
+	if resp.StatusCode != 504 || resp.Header.Get(protocol.HeaderError) != "upstream_timeout" {
 		t.Fatalf("got %d %v", resp.StatusCode, resp.Header)
 	}
 }
@@ -90,7 +90,7 @@ func Test500DoesNotEjectSingleUpstream(t *testing.T) {
 			t.Fatalf("request %d: %d", i, resp.StatusCode)
 		}
 	}
-	if count.Load() != 2 || !x.StatusRoutes()[0].Healthy {
+	if count.Load() != 2 || !x.StatusServices()[0].Healthy {
 		t.Fatal("500 ejected upstream")
 	}
 	r := x.routes["chat"]
@@ -189,7 +189,7 @@ func TestReopenLogsDoesNotCancelLiveStream(t *testing.T) {
 	done := make(chan struct{})
 	go func() { x.ServeStream(context.Background(), a); close(done) }()
 	go func() {
-		protocol.WriteStreamHeader(b, protocol.StreamHeader{V: 1, Route: "chat", Kind: "http"})
+		protocol.WriteStreamHeader(b, protocol.StreamHeader{V: protocol.Version, Service: "chat", Kind: "http"})
 		io.WriteString(b, "GET /v1/models HTTP/1.1\r\nHost: ignored\r\n\r\n")
 	}()
 	resp, err := http.ReadResponse(bufio.NewReader(b), nil)
@@ -281,7 +281,7 @@ func FuzzHTTPStreamParser(f *testing.F) {
 		if len(data) > 65536 {
 			t.Skip()
 		}
-		header := []byte(`{"v":1,"route":"chat","kind":"http"}` + "\n")
+		header := []byte(`{"v":2,"service":"chat","kind":"http"}` + "\n")
 		x.ServeStream(context.Background(), &parserConn{reader: bytes.NewReader(append(header, data...))})
 	})
 }

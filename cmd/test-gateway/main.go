@@ -59,7 +59,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	g, err := testgateway.New(strings.TrimSpace(string(token)), "local-dev", ed25519.PrivateKey(key))
+	g, err := testgateway.New(strings.TrimSpace(string(token)), ed25519.PrivateKey(key))
 	if err != nil {
 		return err
 	}

@@ -19,7 +19,7 @@ func TestStorageRawKeyBoundaries(t *testing.T) {
 	if got := ValidateStorageKey("control\u0085", 0, false); got != "invalid_key" {
 		t.Fatal(got)
 	}
-	if got := ValidateStorageKey(".cletus-connector/probe/key", 0, false); got != "invalid_key" {
+	if got := ValidateStorageKey(".eidonix-connector/probe/key", 0, false); got != "invalid_key" {
 		t.Fatal(got)
 	}
 }

@@ -19,7 +19,7 @@ import (
 func TestStorageDispatchAndPrivateAdvertisement(t *testing.T) {
 	cfg := config.Route{ID: "files", Type: "object_storage", Endpoint: "https://storage.corp.example", Bucket: "private-bucket-sentinel", Prefix: "documents/", CredentialsFile: "private-credential-sentinel", Encryption: config.Encryption{Mode: "sse-c", KeyFile: "private-key-sentinel"}, MaxObjectBytes: "5GiB", MaxConcurrency: 16}
 	x := &Connector{routes: map[string]*route{"files": {cfg: cfg}, "chat": {cfg: config.Route{ID: "chat", Type: "openai_chat"}}}, order: []string{"files", "chat"}}
-	encoded, err := json.Marshal(x.HelloRoutes())
+	encoded, err := json.Marshal(x.HelloServices())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -28,7 +28,7 @@ func TestStorageDispatchAndPrivateAdvertisement(t *testing.T) {
 			t.Fatal("private configuration advertised")
 		}
 	}
-	route := x.HelloRoutes()[0]
+	route := x.HelloServices()[0]
 	if route.Storage == nil || route.Storage.MaxKeyBytes != 1024-len(cfg.Prefix) || route.Storage.MaxObjectBytes != 5<<30 || route.Healthy {
 		t.Fatal(route)
 	}
@@ -37,7 +37,7 @@ func TestStorageDispatchAndPrivateAdvertisement(t *testing.T) {
 		done := make(chan struct{})
 		go func() { defer close(done); x.ServeStream(context.Background(), b) }()
 		a.SetDeadline(time.Now().Add(time.Second))
-		protocol.WriteStreamHeader(a, protocol.StreamHeader{V: 1, Route: tc.route, Kind: tc.kind, RequestID: "r-1", Op: "head", Key: protocol.EncodeStorageKey("a")})
+		protocol.WriteStreamHeader(a, protocol.StreamHeader{V: protocol.Version, Service: tc.route, Kind: tc.kind, RequestID: "r-1", Op: "head", Key: protocol.EncodeStorageKey("a")})
 		result, err := protocol.ReadStorageResult(bufio.NewReader(a), "head")
 		a.Close()
 		<-done
@@ -49,7 +49,7 @@ func TestStorageDispatchAndPrivateAdvertisement(t *testing.T) {
 	done := make(chan struct{})
 	go func() { defer close(done); x.ServeStream(context.Background(), b) }()
 	a.SetDeadline(time.Now().Add(time.Second))
-	protocol.WriteStreamHeader(a, protocol.StreamHeader{V: 1, Route: "files", Kind: "http", RequestID: "r-1"})
+	protocol.WriteStreamHeader(a, protocol.StreamHeader{V: protocol.Version, Service: "files", Kind: "http", RequestID: "r-1"})
 	response, _ := io.ReadAll(a)
 	a.Close()
 	<-done

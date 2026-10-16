@@ -34,7 +34,7 @@ func TestInvalidKeysNeverReachBackend(t *testing.T) {
 	var calls atomic.Int32
 	h, _ := testHandler(t, func(w http.ResponseWriter, r *http.Request) { calls.Add(1); w.WriteHeader(500) }, nil)
 	zero := int64(0)
-	for _, key := range []string{"../escape", "/absolute", "a//b", "a\\b", "a\x00b", "a\u0085b", ".cletus-connector/probe/x", strings.Repeat("k", 1018)} {
+	for _, key := range []string{"../escape", "/absolute", "a//b", "a\\b", "a\x00b", "a\u0085b", ".eidonix-connector/probe/x", strings.Repeat("k", 1018)} {
 		for _, header := range []protocol.StreamHeader{{Op: "head", Key: b64(key)}, {Op: "put", Key: b64(key), Size: &zero}, {Op: "delete", Key: b64(key)}, {Op: "get", Key: b64(key)}, {Op: "copy", SrcKey: b64(key), DstKey: b64("safe")}, {Op: "copy", SrcKey: b64("safe"), DstKey: b64(key)}, {Op: "list", Prefix: b64(key), Max: 1}, {Op: "list", Prefix: "", Token: b64(key), Max: 1}} {
 			r, _ := storageExchange(t, h, header, nil)
 			if r["ok"] == true {
@@ -127,7 +127,7 @@ func TestSweepConfinedOldUploadsAndOwnActive(t *testing.T) {
 			for _, u := range []struct {
 				key, id string
 				age     time.Duration
-			}{{"objects/old", "old", 25 * time.Hour}, {"objects/fresh", "fresh", time.Hour}, {"elsewhere/old", "outside", 25 * time.Hour}, {"objects/own", "own", 25 * time.Hour}, {"objects/.cletus-connector/probe/abandoned", "probe", 25 * time.Hour}} {
+			}{{"objects/old", "old", 25 * time.Hour}, {"objects/fresh", "fresh", time.Hour}, {"elsewhere/old", "outside", 25 * time.Hour}, {"objects/own", "own", 25 * time.Hour}, {"objects/.eidonix-connector/probe/abandoned", "probe", 25 * time.Hour}} {
 				fmt.Fprintf(w, "<Upload><Key>%s</Key><UploadId>%s</UploadId><Initiated>%s</Initiated></Upload>", u.key, u.id, now.Add(-u.age).Format(time.RFC3339))
 			}
 			io.WriteString(w, `</ListMultipartUploadsResult>`)
@@ -204,7 +204,7 @@ func TestChecksReadOnlyAndFailedProbeCleaned(t *testing.T) {
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if len(writeKeys) != 1 || len(deletes) < 1 || writeKeys[0] != deletes[len(deletes)-1] || !strings.Contains(writeKeys[0], "/objects/.cletus-connector/probe/") {
+	if len(writeKeys) != 1 || len(deletes) < 1 || writeKeys[0] != deletes[len(deletes)-1] || !strings.Contains(writeKeys[0], "/objects/.eidonix-connector/probe/") {
 		t.Fatalf("probe writes/deletes %v %v", writeKeys, deletes)
 	}
 }
@@ -245,7 +245,7 @@ func TestUploadLifetimeWhileDataFlows(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		h.Serve(context.Background(), serverStream, bufio.NewReader(serverStream), protocol.StreamHeader{V: 1, Kind: "storage", Route: "files", RequestID: "test", Op: "put", Key: b64("safe"), Size: intPtr(-1)})
+		h.Serve(context.Background(), serverStream, bufio.NewReader(serverStream), protocol.StreamHeader{V: protocol.Version, Kind: "storage", Service: "files", RequestID: "test", Op: "put", Key: b64("safe"), Size: intPtr(-1)})
 	}()
 	defer clientStream.Close()
 	clientStream.SetDeadline(time.Now().Add(time.Second))
@@ -284,7 +284,7 @@ func TestNonPutEOFImmediatelyCancelsBackend(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		h.Serve(context.Background(), serverStream, bufio.NewReader(serverStream), protocol.StreamHeader{V: 1, Kind: "storage", Route: "files", RequestID: "cancel-test", Op: "get", Key: b64("safe")})
+		h.Serve(context.Background(), serverStream, bufio.NewReader(serverStream), protocol.StreamHeader{V: protocol.Version, Kind: "storage", Service: "files", RequestID: "cancel-test", Op: "get", Key: b64("safe")})
 	}()
 	select {
 	case <-started:
@@ -328,7 +328,7 @@ func TestVerifiedTrailerWaitsForBoundedFIN(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		h.Serve(context.Background(), c, bufio.NewReader(c), protocol.StreamHeader{V: 1, Kind: "storage", Route: "files", RequestID: "fin-test", Op: "put", Key: b64("safe"), Size: intPtr(3)})
+		h.Serve(context.Background(), c, bufio.NewReader(c), protocol.StreamHeader{V: protocol.Version, Kind: "storage", Service: "files", RequestID: "fin-test", Op: "put", Key: b64("safe"), Size: intPtr(3)})
 	}()
 	defer b.Close()
 	b.SetDeadline(time.Now().Add(time.Second))

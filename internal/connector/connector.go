@@ -121,7 +121,7 @@ func New(c *config.Config) (*Connector, error) {
 				return
 			}
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(target.Load().StatusRoutes())
+			json.NewEncoder(w).Encode(target.Load().StatusServices())
 		}), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 30 * time.Second}
 		go server.Serve(l)
 	}
@@ -161,36 +161,33 @@ func (x *Connector) healthy(r *route) bool {
 	}
 	return false
 }
-func (x *Connector) HelloRoutes() []protocol.Route {
+func (x *Connector) HelloServices() []protocol.Service {
 	x.mu.Lock()
 	defer x.mu.Unlock()
-	out := []protocol.Route{}
+	out := []protocol.Service{}
 	for _, id := range x.order {
 		r := x.routes[id]
-		advertisement := protocol.Route{ID: id, Type: r.cfg.Type, MethodsPaths: r.cfg.MethodsPaths, WebsocketPaths: r.cfg.WebsocketPaths, MaxConcurrency: r.cfg.MaxConcurrency, Healthy: x.healthy(r), Models: append([]string{}, r.models...)}
+		advertisement := protocol.Service{Name: id, Type: r.cfg.Type, MaxConcurrentRequests: r.cfg.MaxConcurrency, Healthy: x.healthy(r), Models: append([]string{}, r.models...)}
 		if r.cfg.Type == "object_storage" {
 			maxObject, _ := config.Bytes(r.cfg.MaxObjectBytes)
-			advertisement.MethodsPaths = [][2]string{}
-			advertisement.Storage = &protocol.StorageRoute{MaxKeyBytes: 1024 - len(r.cfg.Prefix), MaxObjectBytes: maxObject, Encryption: r.cfg.Encryption.Mode}
-			if r.cfg.ReportLocation {
-				advertisement.Storage.Location = r.cfg.Bucket + "/" + r.cfg.Prefix
-			}
+			advertisement.Type = protocol.TypeStorage
+			advertisement.Storage = &protocol.StorageService{MaxKeyBytes: 1024 - len(r.cfg.Prefix), MaxObjectBytes: maxObject, Encryption: r.cfg.Encryption.Mode}
 		}
 		out = append(out, advertisement)
 	}
 	return out
 }
-func (x *Connector) StatusRoutes() []protocol.RouteStatus {
+func (x *Connector) StatusServices() []protocol.ServiceStatus {
 	x.mu.Lock()
 	defer x.mu.Unlock()
-	out := []protocol.RouteStatus{}
+	out := []protocol.ServiceStatus{}
 	for _, id := range x.order {
 		r := x.routes[id]
 		flight := r.flight
 		if r.storage != nil {
 			flight = r.storage.InFlight()
 		}
-		out = append(out, protocol.RouteStatus{ID: id, Healthy: x.healthy(r), Models: append([]string{}, r.models...), InFlight: flight})
+		out = append(out, protocol.ServiceStatus{Name: id, Healthy: x.healthy(r), Models: append([]string{}, r.models...), InFlight: flight})
 	}
 	return out
 }
@@ -297,7 +294,7 @@ func (x *Connector) release(r *route, u *upstream, bad bool) {
 }
 func errorResponse(c net.Conn, status int, code string) {
 	body := code + "\n"
-	fmt.Fprintf(c, "HTTP/1.1 %d %s\r\nX-Cletus-Connector-Error: %s\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", status, http.StatusText(status), code, len(body), body)
+	fmt.Fprintf(c, "HTTP/1.1 %d %s\r\n"+protocol.HeaderError+": %s\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", status, http.StatusText(status), code, len(body), body)
 }
 
 type idleConn struct {
@@ -428,7 +425,7 @@ func (x *Connector) ServeStream(parent context.Context, raw net.Conn) {
 		x.auditMu.Lock()
 		defer x.auditMu.Unlock()
 		if x.audit != nil {
-			entry := map[string]any{"timestamp": time.Now().UTC(), "session": protocol.SessionID(ctx), "route": h.Route, "method": method, "path": auditPath, "status": status, "bytes_in": in, "bytes_out": out, "duration_ms": time.Since(start).Milliseconds(), "upstream": upname, "request_id": h.RequestID, "error": auditError}
+			entry := map[string]any{"timestamp": time.Now().UTC(), "session": protocol.SessionID(ctx), "route": h.Service, "method": method, "path": auditPath, "status": status, "bytes_in": in, "bytes_out": out, "duration_ms": time.Since(start).Milliseconds(), "upstream": upname, "request_id": h.RequestID, "error": auditError}
 			if modelRewrite != nil {
 				// Model ids are metadata; request and response bodies are never logged.
 				entry["model"] = modelRewrite.Alias
@@ -446,7 +443,7 @@ func (x *Connector) ServeStream(parent context.Context, raw net.Conn) {
 		return
 	}
 	x.mu.Lock()
-	r := x.routes[h.Route]
+	r := x.routes[h.Service]
 	var storageHandler *storage.Handler
 	if r != nil {
 		storageHandler = r.storage

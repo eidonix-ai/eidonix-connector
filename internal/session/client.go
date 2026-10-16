@@ -26,12 +26,12 @@ import (
 
 type Handler interface {
 	ServeStream(context.Context, net.Conn)
-	HelloRoutes() []protocol.Route
-	StatusRoutes() []protocol.RouteStatus
+	HelloServices() []protocol.Service
+	StatusServices() []protocol.ServiceStatus
 }
 type Options struct {
 	Server, Token, Version string
-	Keys                   map[string]ed25519.PublicKey
+	Keys                   []ed25519.PublicKey
 	TLSConfig              *tls.Config
 	DialContext            func(context.Context, string, string) (net.Conn, error)
 	MaxStreams             int
@@ -45,22 +45,21 @@ var processStarted = time.Now()
 
 func RunOptions(ctx context.Context, o Options, h Handler) error {
 	u, e := url.Parse(o.Server)
-	if e != nil || u.Scheme != "https" || u.Hostname() == "" || (u.Port() != "" && u.Port() != "443") || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") {
-		return errors.New("cloud server must be an HTTPS origin on port 443")
+	if e != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") {
+		return errors.New("upstream url must be an HTTPS origin without a path")
 	}
-	id, _, e := protocol.ParseToken(o.Token)
-	if e != nil {
+	if _, _, e := protocol.ParseToken(o.Token); e != nil {
 		return e
 	}
 	if len(o.Keys) == 0 {
-		return errors.New("no pinned server keys")
+		return errors.New("no upstream public keys")
 	}
 	instance, e := processInstance()
 	if e != nil {
 		return e
 	}
 	u.Scheme = "wss"
-	u.Path = "/v1/connectors/session"
+	u.Path = protocol.SessionPath
 	if o.MaxStreams <= 0 {
 		o.MaxStreams = 128
 	}
@@ -68,7 +67,7 @@ func RunOptions(ctx context.Context, o Options, h Handler) error {
 	delay := time.Second
 	for ctx.Err() == nil {
 		started := time.Now()
-		e = connect(ctx, u.String(), id, instance, o, h)
+		e = connect(ctx, u.String(), instance, o, h)
 		if ctx.Err() != nil {
 			break
 		}
@@ -92,21 +91,22 @@ func RunOptions(ctx context.Context, o Options, h Handler) error {
 	}
 	return ctx.Err()
 }
-func connect(ctx context.Context, endpoint, id, instance string, o Options, h Handler) error {
+
+// ErrAuthFailed reports that the upstream refused the connection token.
+var ErrAuthFailed = errors.New("upstream refused the connection token")
+
+// connect runs one session. The upgrade request carries no credential: the
+// token is sent on the control stream only after the server's signature over
+// this connection's nonce and instance has been verified.
+func connect(ctx context.Context, endpoint, instance string, o Options, h Handler) error {
 	nonce, e := protocol.NewNonce()
 	if e != nil {
 		return e
 	}
 	headers := http.Header{}
-	headers.Set("Authorization", "Bearer "+o.Token)
-	headers.Set("X-Cletus-Connector-Nonce", nonce)
-	headers.Set("X-Cletus-Connector-Version", o.Version)
-	headers.Set("X-Cletus-Connector-Instance", instance)
-	proxy := o.Proxy
-	if proxy == nil {
-		proxy = http.ProxyFromEnvironment
-	}
-	d := websocket.Dialer{Proxy: proxy, TLSClientConfig: o.TLSConfig, NetDialContext: o.DialContext, HandshakeTimeout: 10 * time.Second, Subprotocols: []string{protocol.Subprotocol}}
+	headers.Set(protocol.HeaderNonce, nonce)
+	headers.Set(protocol.HeaderInstance, instance)
+	d := websocket.Dialer{Proxy: o.Proxy, TLSClientConfig: o.TLSConfig, NetDialContext: o.DialContext, HandshakeTimeout: 10 * time.Second, Subprotocols: []string{protocol.Subprotocol}}
 	ws, response, e := d.DialContext(ctx, endpoint, headers)
 	if e != nil {
 		if response != nil && response.Body != nil {
@@ -118,8 +118,8 @@ func connect(ctx context.Context, endpoint, id, instance string, o Options, h Ha
 	if ws.Subprotocol() != protocol.Subprotocol {
 		return errors.New("incorrect cloud subprotocol")
 	}
-	if e = protocol.VerifyIdentity(response.Header, nonce, id, instance, o.Keys, time.Now()); e != nil {
-		return e
+	if e = protocol.VerifyIdentity(response.Header, nonce, instance, o.Keys, time.Now()); e != nil {
+		return fmt.Errorf("upstream identity: %w", e)
 	}
 	yc := yamux.DefaultConfig()
 	yc.MaxStreamWindowSize = 256 << 10
@@ -150,21 +150,40 @@ func connect(ctx context.Context, endpoint, id, instance string, o Options, h Ha
 	}
 	defer control.Close()
 	control.SetDeadline(time.Now().Add(10 * time.Second))
-	if e = protocol.WriteJSONLine(control, protocol.MaxControlBytes, protocol.Message{V: 1, Type: "hello", InstanceID: instance, Version: o.Version, OS: runtime.GOOS, Arch: runtime.GOARCH, Capabilities: []string{protocol.CapabilityInference, protocol.CapabilityStorage}, Routes: h.HelloRoutes()}); e != nil {
-		return e
-	}
 	reader := bufio.NewReader(control)
-	var ack protocol.Message
-	if e = protocol.ReadJSONLine(reader, protocol.MaxControlBytes, &ack); e != nil {
+	if e = protocol.WriteMessage(control, protocol.Auth{V: protocol.Version, Type: protocol.MessageAuth, Token: o.Token}); e != nil {
 		return e
 	}
-	if ack.V != 1 || ack.Type != "hello_ack" || ack.SessionID == "" {
+	env, e := protocol.ReadMessage(reader)
+	if e != nil {
+		return e
+	}
+	var auth protocol.AuthResult
+	if e = env.Decode(&auth); e != nil {
+		return e
+	}
+	if env.Type == protocol.MessageAuthFailed {
+		return fmt.Errorf("%w: %s", ErrAuthFailed, auth.Reason)
+	}
+	if env.Type != protocol.MessageAuthOK || auth.SessionID == "" {
+		return errors.New("expected auth_ok")
+	}
+	if e = protocol.WriteMessage(control, protocol.Hello{V: protocol.Version, Type: protocol.MessageHello, InstanceID: instance, Version: o.Version, OS: runtime.GOOS, Arch: runtime.GOARCH, Capabilities: []string{protocol.CapabilityInference, protocol.CapabilityStorage}, Services: h.HelloServices()}); e != nil {
+		return e
+	}
+	env, e = protocol.ReadMessage(reader)
+	if e != nil {
+		return e
+	}
+	var ack protocol.HelloAck
+	if env.Type != protocol.MessageHelloAck || env.Decode(&ack) != nil {
 		return errors.New("expected hello_ack")
 	}
 	control.SetDeadline(time.Time{})
-	sessionCtx = protocol.WithSessionID(sessionCtx, ack.SessionID)
-	for _, r := range ack.RejectedRoutes {
-		slog.Warn("cloud rejected route", "route", r.ID, "reason", r.Reason)
+	sessionCtx = protocol.WithSessionID(sessionCtx, auth.SessionID)
+	slog.Info("upstream session established", "session", auth.SessionID, "org", auth.Org, "accepted", len(ack.Accepted))
+	for _, r := range ack.Rejected {
+		slog.Warn("upstream rejected service", "service", r.Name, "reason", r.Reason)
 	}
 	limit := o.MaxStreams
 	if ack.Limits.MaxStreams > 0 && ack.Limits.MaxStreams < limit {
@@ -235,14 +254,14 @@ func controlLoop(ctx context.Context, c net.Conn, r *bufio.Reader, h Handler, st
 			case <-finished:
 				return
 			case <-ticker.C:
-				routes := h.StatusRoutes()
-				encoded, _ := json.Marshal(routes)
+				services := h.StatusServices()
+				encoded, _ := json.Marshal(services)
 				if bytes.Equal(encoded, lastStatus) && time.Since(lastSent) < 15*time.Second {
 					continue
 				}
 				lastStatus = encoded
 				lastSent = time.Now()
-				if e := write(protocol.StatusMessage{V: 1, Type: "status", Routes: routes, UptimeS: int64(time.Since(started).Seconds())}); e != nil {
+				if e := write(protocol.Status{V: protocol.Version, Type: protocol.MessageStatus, Services: services, UptimeS: int64(time.Since(started).Seconds())}); e != nil {
 					c.Close()
 					return
 				}
@@ -251,20 +270,19 @@ func controlLoop(ctx context.Context, c net.Conn, r *bufio.Reader, h Handler, st
 	}()
 	for {
 		c.SetReadDeadline(time.Now().Add(50 * time.Second))
-		var m protocol.Message
-		if e := protocol.ReadJSONLine(r, protocol.MaxControlBytes, &m); e != nil {
+		m, e := protocol.ReadMessage(r)
+		if e != nil {
 			return e
 		}
-		if m.V != 1 {
-			return errors.New("invalid control version")
-		}
 		switch m.Type {
-		case "ping":
-			if e := write(protocol.Message{V: 1, Type: "pong"}); e != nil {
+		case protocol.MessagePing:
+			if e := write(protocol.Control{V: protocol.Version, Type: protocol.MessagePong}); e != nil {
 				return e
 			}
-		case "close":
-			return errors.New("server closed session")
+		case protocol.MessageClose:
+			var c protocol.Control
+			m.Decode(&c)
+			return fmt.Errorf("upstream closed session: %s", c.Reason)
 		default:
 			slog.Warn("unknown control message", "type", m.Type)
 		}

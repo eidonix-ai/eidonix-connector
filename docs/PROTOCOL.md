@@ -1,72 +1,105 @@
-# Connector protocol
+# Connector protocol, version 2
 
-The shared Go `protocol` package defines `cletus-connector.v1`. Capability strings version additional services independently: `inference/1` and `storage/1`. Capability advertisement describes the build, rather than which routes happen to be configured. Additive JSON fields are ignored by older peers; breaking storage changes require a new storage capability version.
+The Go `protocol` package defines `eidonix-connector.v2` and is the reference for every byte described here. It imports nothing from the connector, so the gateway vendors it unchanged. Capability strings version additional services independently: `inference/1` and `storage/1`. Capabilities describe the build, not which services happen to be configured. Additive JSON fields are ignored by older peers; breaking changes require a new protocol version. A v2 connector speaks only v2.
 
 ## Connection and identity
 
-The connector makes one outbound `wss://<server>:443/v1/connectors/session` connection with WebSocket subprotocol `cletus-connector.v1`. Only this cloud connection uses `HTTPS_PROXY` and `NO_PROXY`. TLS uses system trust or a locally configured CA bundle. Application identity verification remains mandatory through a TLS inspection proxy.
+The connector makes one outbound `wss://<host>[:port]/v1/connectors/session` connection (the `upstream.url` origin) with WebSocket subprotocol `eidonix-connector.v2`. Only this connection may use the configured `upstream.proxy_url`; upstream service calls never use a proxy. TLS uses system trust plus an optional configured CA certificate.
 
-The upgrade request sends:
+The upgrade request carries **no credential**:
 
-- `Authorization: Bearer cxn_<id>_<secret>`: a 16-character base32 ID and 32 random secret bytes encoded as unpadded base64url. Token verifiers hash the decoded secret with SHA-256.
-- `X-Cletus-Connector-Nonce`: 32 fresh random bytes in standard base64.
-- `X-Cletus-Connector-Version`: the connector build version.
-- `X-Cletus-Connector-Instance`: a UUID generated at process startup.
+- `X-Eidonix-Nonce`: 32 fresh random bytes, standard base64.
+- `X-Eidonix-Instance`: a UUID generated at process start.
 
-The server returns `X-Cletus-Server-Time` (RFC3339), `X-Cletus-Server-Key-Id`, and `X-Cletus-Server-Signature` (standard base64 Ed25519). The signature covers these exact UTF-8 bytes, without a newline:
+The gateway answers `101` with:
+
+- `X-Eidonix-Server-Key-Id`: `"eidonix-" + hex(sha256(public key)[:4])`. The connector computes the id of each configured `public_keys` entry itself; owners never type ids.
+- `X-Eidonix-Server-Time`: RFC3339.
+- `X-Eidonix-Server-Signature`: standard base64 Ed25519 signature over these exact UTF-8 bytes, without a newline:
 
 ```
-cletus-connector.v1|<nonce>|<token id>|<instance UUID>|<server time>
+eidonix-connector.v2|<nonce>|<instance UUID>|<server time>
 ```
 
-The connector verifies the signature against its local public-key pins and rejects time skew exceeding five minutes. It verifies both the subprotocol and identity before starting multiplexing. Fresh nonces bind signatures to individual upgrade attempts.
+The connector checks the subprotocol, that the key id names one of its configured keys, that the server time is within five minutes of local time, and the signature. Any failure closes the WebSocket before multiplexing starts, so the token is never sent to a server that cannot prove it holds a configured key. `protocol/testdata/identity-vector.json` is a fixed signature vector.
 
-The signature proves that a pinned signing key answered the fresh challenge. It does not bind the signature to the TLS channel or authenticate subsequent frames. A malicious trusted TLS inspection proxy could relay the challenge to the real server and then alter session traffic. Operators therefore trust their TLS inspection infrastructure; the pin does not provide end-to-end channel protection through a hostile proxy.
+Only then does the connector open the control stream and send the token:
+
+```json
+{"v":2,"type":"auth","token":"cxn_<id>_<secret>"}
+```
+
+The token is `cxn_` + a 16-character base32 id + `_` + 32 random secret bytes as unpadded base64url; verifiers store the SHA-256 of the decoded secret. The gateway answers `{"v":2,"type":"auth_ok","session_id":"…","org":"<display name>"}`, or `{"v":2,"type":"auth_failed","reason":"…"}` and closes. Then `hello` / `hello_ack` follow.
+
+What the signature does and does not prove: it shows that a holder of a configured key answered this connection's fresh challenge, so a server without the key never sees the token. It is not bound to the TLS channel. A TLS-inspecting proxy that the host trusts (it has a CA in the host's trust store) can relay the challenge to the real gateway and then read or alter the session, including the token. See [security](SECURITY.md).
 
 ## Multiplexing and control
 
 WebSocket binary messages carry a byte stream through yamux. Text transport messages are rejected. Binary messages are bounded to 256 KiB. Yamux uses 256 KiB stream windows, a 15-second keepalive and a 10-second connection write timeout. The connector opens stream 1 for control; the gateway opens request streams. Additional connector-initiated streams are protocol violations.
 
-Control uses newline-delimited JSON, with at most 64 KiB including newline. Every message includes `v:1` and `type`. Unsupported versions terminate the session. Unknown message types are logged and ignored. Remote messages cannot alter local configuration.
+Control uses newline-delimited JSON, at most 64 KiB per line including the newline. Every message has `v:2` and `type`. Any other version terminates the session. Unknown message types are logged and ignored. Remote messages cannot alter local configuration.
 
 | Direction | Type | Fields |
 | --- | --- | --- |
-| Connector → gateway | `hello` | `instance_id`, `version`, `os`, `arch`, `capabilities`, `routes` |
-| Connector → gateway | `status` | `routes`, `uptime_s`; every 15 seconds and when status changes |
-| Connector → gateway | `pong` | Reply to `ping` |
-| Gateway → connector | `hello_ack` | `session_id`, `org` display name, `accepted_routes`, `rejected_routes:[{id,reason}]`, `limits:{max_streams}` |
+| Connector → gateway | `auth` | `token` |
+| Gateway → connector | `auth_ok` | `session_id`, `org` (display name) |
+| Gateway → connector | `auth_failed` | `reason`; the gateway then closes |
+| Connector → gateway | `hello` | `instance_id`, `version`, `os`, `arch`, `capabilities`, `services` |
+| Gateway → connector | `hello_ack` | `accepted:[name]`, `rejected:[{name,reason}]`, `limits:{max_streams}` |
+| Connector → gateway | `status` | `services`, `uptime_s`; every 15 seconds and whenever status changes |
 | Gateway → connector | `ping` | Heartbeat; the gateway closes after three missed replies |
+| Connector → gateway | `pong` | Reply to `ping` |
 | Gateway → connector | `close` | `reason`; terminates the session |
 
-Inference route advertisements contain `id`, `type`, `methods_paths`, optional `websocket_paths`, `max_concurrency`, `healthy`, and optional discovered `models`. Status routes contain `id`, `healthy`, `in_flight`, and optional `models`.
-
-An `object_storage` route has empty `methods_paths` and adds:
+A `hello` service is:
 
 ```json
-{"storage":{"max_key_bytes":1017,"max_object_bytes":5368709120,"encryption":"sse-c","location":"bucket/prefix/"}}
+{"name":"cn3","type":"chat","models":["model-a"],"models_any":false,"max_concurrent_requests":32,"healthy":true}
 ```
 
-Encryption is `none`, `sse-s3`, `sse-kms` or `sse-c`. `location` is optional display metadata, omitted when reporting is disabled. It cannot select a destination. A gateway rejects storage routes advertised without `storage/1` using `storage_capability_missing`, and never opens storage streams to such sessions. It opens storage streams only for accepted storage routes. Request acceptance starts after `hello_ack`.
+`type` is one of `chat`, `anthropic`, `embeddings`, `rerank`, `transcription`, `speech`, `image`, `document`, `conversion`, `realtime`, `storage`, `custom`; the type fixes exactly which requests the connector accepts (see [configuration](CONFIG.md)). `models` is the list of names callers may use, always present (empty for types without models). `models_any:true` means the owner allows any model; `models` is then the list discovered from the server. `max_concurrent_requests` is the per-service limit the connector enforces; the gateway should enforce it per service as well. A `storage` service adds:
+
+```json
+{"storage":{"max_key_bytes":1017,"max_object_bytes":5368709120,"encryption":"sse-c"}}
+```
+
+Encryption is `none`, `sse-s3`, `sse-kms` or `sse-c`, the owner's choice. A gateway rejects storage services advertised without `storage/1` (`storage_capability_missing`) and never opens storage streams to such sessions.
+
+A `status` service is `{"name","healthy","in_flight","models"}`. `models` is **always** present: an empty array means the list is now empty, and the gateway must clear its copy. `protocol/testdata/control.jsonl` holds golden lines for every message type.
 
 ## Request headers and inference
 
-Each request stream starts with one JSON line of at most 4 KiB including newline:
+Each request stream starts with one JSON line of at most 4 KiB including the newline:
 
 ```json
-{"v":1,"route":"chat","kind":"http","request_id":"r-1"}
+{"v":2,"service":"chat","kind":"http","request_id":"r1","org_id":"7","org_slug":"example-org","user_key_id":"42"}
 ```
 
-The header selects a locally configured route. It never selects a host, port, URL, bucket, filesystem path or command. Unknown fields are ignored. Malformed or oversized headers close the stream without a response. A well-formed unknown `kind` receives this generic rejection line and then closes:
+`service` selects a locally configured service. It never selects a host, port, URL, bucket, filesystem path or command. `request_id` is the gateway's request id; `org_id`, `org_slug` and `user_key_id` identify the organization and user key the gateway is serving. The connector does not authorise on them (deciding which organizations may use a service is the gateway's job); it writes them to its access log so the owner's log matches the gateway's usage records line by line. These four fields are printable ASCII of at most 64 bytes. Unknown fields are ignored. Malformed or oversized headers close the stream without a response. A well-formed unknown `kind` receives this rejection line and then closes:
 
 ```json
-{"v":1,"ok":false,"error":{"code":"unsupported_kind","message":"unsupported stream kind"}}
+{"v":2,"ok":false,"error":{"code":"unsupported_kind","message":"unsupported stream kind"}}
 ```
 
-`kind:"http"` carries an HTTP/1.1 request and response. The connector validates the method and origin-form path against the local route, builds a new upstream request, filters headers, injects local authentication and streams the response as bytes arrive. It never follows upstream redirects or uses environment proxies for upstream calls. Connector-generated HTTP errors use status 400 (a request body the connector must rewrite but can't parse, `invalid_request`), 403, 404, 413, 429, 502 or 504 and `X-Cletus-Connector-Error`. Status codes are additive: a gateway relays any connector error status as-is.
+`kind:"http"` carries an HTTP/1.1 request and response. The connector checks the method and origin-form path against the service type's fixed request list, enforces the model allowlist, builds a new upstream request (mapping the path through `api_path`), filters headers, adds the configured `api_key` and streams the response as bytes arrive. It never follows upstream redirects or uses a proxy for upstream calls. On a service whose `models` is a list or map, `GET /v1/models` is answered by the connector from the configured names without contacting the server.
 
-`kind:"websocket"` starts with an HTTP GET upgrade request and response. Relay messages then consist of one type byte (1 text, 2 binary, 8 close), four unsigned big-endian length bytes and payload. The route limits message size; the default is 4 MiB. Ping and pong are handled locally. HTTP or WebSocket streams naming a storage route receive HTTP 403 `path_not_allowed`.
+Connector-generated HTTP errors carry the code in `X-Eidonix-Error` and the body `<code>\n`:
 
-Inference streams use route-specific idle timeouts with no total duration cap. Closing or resetting a stream cancels its upstream. Session disconnection cancels active streams and reconnects with jittered exponential backoff from one to sixty seconds. Reconnections retain locally pinned destination addresses.
+| Status | Codes |
+| --- | --- |
+| 400 | `invalid_request`, `model_required` |
+| 403 | `path_not_allowed`, `content_type_not_allowed`, `model_not_allowed` |
+| 404 | `route_not_found` (no such service) |
+| 413 | `request_too_large` |
+| 429 | `busy` (the service's `max_concurrent_requests` is reached), `rate_limited` |
+| 502 | `upstream_unavailable`, `upstream_error`, `response_too_large` |
+| 504 | `upstream_timeout` |
+
+`model_not_allowed` means the request named a model outside the service's allowlist; it is never forwarded. `model_required` means the request named no model and the allowlist has more than one entry. A gateway relays any connector status as-is.
+
+`kind:"websocket"` starts with an HTTP GET upgrade request and response. Relay messages then consist of one type byte (1 text, 2 binary, 8 close), four unsigned big-endian length bytes and the payload, at most 4 MiB. Ping and pong are handled locally. HTTP or WebSocket streams naming a storage service receive HTTP 403 `path_not_allowed`.
+
+Inference streams use per-service idle timeouts with no total duration cap. Closing or resetting a stream cancels its upstream request. Session disconnection cancels active streams and reconnects with jittered exponential backoff from one to sixty seconds. Reconnections keep the destination addresses pinned at start.
 
 ## Storage requests
 
@@ -81,13 +114,13 @@ Storage streams use `kind:"storage"`. Their base header adds `op` and these oper
 | `delete` | `key` | None |
 | `copy` | `src_key`, `dst_key` | None |
 
-`route` matches `[a-z0-9-]{1,40}`. `request_id` is 1–64 bytes from `[A-Za-z0-9._:-]`. Unknown operations or invalid field values receive `invalid_request`. A storage stream naming an inference route receives `wrong_route_type`; an unknown route receives `route_not_found`.
+`service` matches `^[a-z0-9][a-z0-9-]{0,39}$`. For storage, `request_id` is 1–64 bytes from `[A-Za-z0-9._:-]`. Unknown operations or invalid field values receive `invalid_request`. A storage stream naming a non-storage service receives `wrong_route_type`; an unknown service receives `route_not_found`.
 
-All key-valued fields (`key`, `src_key`, `dst_key`, `prefix`, and list-result keys) are unpadded canonical base64url of the exact UTF-8 key bytes. Decoded relative keys are 1–1023 bytes; a list prefix may be empty. They cannot contain control characters, leading slash, double slashes, backslashes, dot segments or the reserved first segment `.cletus-connector`. The configured prefix plus relative key must fit within 1024 bytes. Length failures return `key_too_long`; other key failures return `invalid_key`. The connector validates each key before contacting storage.
+All key-valued fields (`key`, `src_key`, `dst_key`, `prefix`, and list-result keys) are unpadded canonical base64url of the exact UTF-8 key bytes. Decoded relative keys are 1–1023 bytes; a list prefix may be empty. They cannot contain control characters, leading slash, double slashes, backslashes, dot segments or the reserved first segment `.eidonix-connector`. The configured prefix plus relative key must fit within 1024 bytes. Length failures return `key_too_long`; other key failures return `invalid_key`. The connector validates each key before contacting storage.
 
 A list token is at most 1400 base64url characters and encodes the last returned relative key. The connector validates it and resumes after that key under the configured prefix. Malformed or otherwise invalid tokens return `invalid_request`; decoded key-length violations return `key_too_long`. Tokens cannot widen the prefix.
 
-Put `size` is −1 for unknown length, otherwise 0 through the route's object limit. `content_type` is at most 255 printable ASCII bytes and a valid media type; empty selects `application/octet-stream`. `if_match` is at most 256 printable ASCII bytes. Ranges are inclusive, with `0 ≤ start ≤ end`. List `max` is 1–1000; non-recursive lists include common prefixes as `dir:true,size:0` entries.
+Put `size` is −1 for unknown length, otherwise 0 through the service's object limit. `content_type` is at most 255 printable ASCII bytes and a valid media type; empty selects `application/octet-stream`. `if_match` is at most 256 printable ASCII bytes. Ranges are inclusive, with `0 ≤ start ≤ end`. List `max` is 1–1000; non-recursive lists include common prefixes as `dir:true,size:0` entries.
 
 ## Storage bodies and completion
 
@@ -111,11 +144,11 @@ For `put`, verification also requires the sender's write-side EOF after the trai
 
 For operations other than `put`, the sender keeps its write side open until it receives the result or finishes reading a get body. An early request-side FIN cancels those operations. A session failure also cancels all backend work. After a put FIN has been sent, a lost result has an uncertain outcome; the caller must check object state rather than assume rollback.
 
-Only after marker, trailer, counts, checksum and FIN verification may the connector commit the object. A small object is committed from a local buffer; larger objects use explicitly managed multipart upload. A success result is sent only after storage confirms commit. A failure before commit aborts multipart state and preserves any existing object. After storage commits, a lost connection or acknowledgment may leave the object committed even though the sender saw no success; callers must account for that uncertain outcome. Put operations have a maximum six-hour lifetime, configurable lower, even if data continues arriving. Get streams have no total duration cap. Other silence is bounded by the route idle timeout. The owning connector aborts an upload when its lifetime expires.
+Only after marker, trailer, counts, checksum and FIN verification may the connector commit the object. A small object is committed from a local buffer; larger objects use explicitly managed multipart upload. A success result is sent only after storage confirms commit. A failure before commit aborts multipart state and preserves any existing object. After storage commits, a lost connection or acknowledgment may leave the object committed even though the sender saw no success; callers must account for that uncertain outcome. Put operations have a maximum six-hour lifetime, configurable lower, even if data continues arriving. Get streams have no total duration cap. Other silence is bounded by the storage idle timeout. The owning connector aborts an upload when its lifetime expires.
 
 ## Storage results and errors
 
-Every operation returns one JSON result line with `v:1` and mandatory `ok`. Non-list lines are at most 4 KiB including newline; list lines are at most 1 MiB and 1000 objects.
+Every operation returns one JSON result line with `v:2` and mandatory `ok`. Non-list lines are at most 4 KiB including newline; list lines are at most 1 MiB and 1000 objects.
 
 | Op | Successful fields | Following data |
 | --- | --- | --- |
@@ -125,9 +158,9 @@ Every operation returns one JSON result line with `v:1` and mandatory `ok`. Non-
 | `list` | `objects`, `truncated`, optional `next_token` | None |
 | `delete` | None | None; idempotent |
 
-List objects contain `key`, `size`, and `dir`, with optional bounded `etag`, `last_modified`, and `content_type` metadata. A truncated page requires a nonempty `next_token`; a complete page omits it. Empty pages still include `objects:[]` and `truncated:false`. Times use RFC3339 UTC. Result ETags and content types are bounded to 256 and 255 bytes. Object sizes never exceed 5 GiB or the local route limit.
+List objects contain `key`, `size`, and `dir`, with optional bounded `etag`, `last_modified`, and `content_type` metadata. A truncated page requires a nonempty `next_token`; a complete page omits it. Empty pages still include `objects:[]` and `truncated:false`. Times use RFC3339 UTC. Result ETags and content types are bounded to 256 and 255 bytes. Object sizes never exceed 5 GiB or the local service limit.
 
-Errors have the form `{"v":1,"ok":false,"error":{"code":"busy","message":"storage route is busy"}}`. The connector uses fixed per-code messages of at most 256 bytes, containing no backend text, keys, endpoints or credentials. The closed code set is:
+Errors have the form `{"v":2,"ok":false,"error":{"code":"busy","message":"service is busy"}}`. The connector uses fixed per-code messages of at most 256 bytes, containing no backend text, keys, endpoints or credentials. Storage results use these codes from the closed set (the full set, including the HTTP codes above and `model_not_allowed` / `model_required`, is in `protocol/errors.go`):
 
 `invalid_request`, `invalid_key`, `key_too_long`, `not_found`, `precondition_failed`, `too_large`, `size_mismatch`, `checksum_mismatch`, `forbidden`, `busy`, `rate_limited`, `backend_unavailable`, `backend_invalid`, `timeout`, `route_not_found`, `wrong_route_type`, `unsupported_kind`, `internal`.
 
@@ -161,4 +194,4 @@ A put error may arrive before the upload finishes; senders read results concurre
 | Multipart part / count | 5–64 MiB, default 16 MiB / at most 10,000 |
 | Put lifetime / post-trailer FIN wait | At most 6 hours / 30 seconds |
 
-`ReadStreamHeader` parses kind without dispatching it. `ValidateStorageHeader` applies field and key bounds. `ReadStorageResult` checks required fields, closed error codes and metadata bounds. `StorageBodyReader` verifies integrity and completion before returning EOF; `StorageBodyWriter.Finish` writes the marker and trailer but leaves FIN to the caller. The protocol package includes golden header fixtures, boundary and half-close tests, and fuzz targets for every storage parser. Application code remains responsible for route authorization, negotiated capabilities, S3 operations, resource accounting and cancellation.
+`ReadStreamHeader` parses kind without dispatching it. `ValidateStorageHeader` applies field and key bounds. `ReadStorageResult` checks required fields, closed error codes and metadata bounds. `StorageBodyReader` verifies integrity and completion before returning EOF; `StorageBodyWriter.Finish` writes the marker and trailer but leaves FIN to the caller. The protocol package includes golden header fixtures, boundary and half-close tests, and fuzz targets for every storage parser. Application code remains responsible for service authorization, negotiated capabilities, S3 operations, resource accounting and cancellation.

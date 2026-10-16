@@ -27,7 +27,7 @@ func TestStorageCapabilityNegotiation(t *testing.T) {
 		}
 		t.Run(name, func(t *testing.T) {
 			_, key, _ := ed25519.GenerateKey(rand.Reader)
-			g, e := New(testToken, "test", key)
+			g, e := New(testToken, key)
 			if e != nil {
 				t.Fatal(e)
 			}
@@ -37,7 +37,7 @@ func TestStorageCapabilityNegotiation(t *testing.T) {
 			instance, _ := protocol.NewInstanceID()
 			nonce, _ := protocol.NewNonce()
 			dialer := websocket.Dialer{TLSClientConfig: server.Client().Transport.(*http.Transport).TLSClientConfig.Clone(), Subprotocols: []string{protocol.Subprotocol}}
-			ws, _, e := dialer.Dial("wss"+strings.TrimPrefix(server.URL, "https")+"/v1/connectors/session", http.Header{"Authorization": {"Bearer " + testToken}, "X-Cletus-Connector-Nonce": {nonce}, "X-Cletus-Connector-Instance": {instance}})
+			ws, _, e := dialer.Dial("wss"+strings.TrimPrefix(server.URL, "https")+"/v1/connectors/session", http.Header{protocol.HeaderNonce: {nonce}, protocol.HeaderInstance: {instance}})
 			if e != nil {
 				t.Fatal(e)
 			}
@@ -54,23 +54,31 @@ func TestStorageCapabilityNegotiation(t *testing.T) {
 				t.Fatal(e)
 			}
 			control.SetDeadline(time.Now().Add(time.Second))
-			hello := protocol.Message{V: 1, Type: "hello", InstanceID: instance, Routes: []protocol.Route{{ID: "files", Type: "object_storage", Storage: &protocol.StorageRoute{MaxKeyBytes: 1017, MaxObjectBytes: 100, Encryption: "sse-s3"}}}}
+			br := bufio.NewReader(control)
+			if e := protocol.WriteMessage(control, protocol.Auth{V: protocol.Version, Type: protocol.MessageAuth, Token: testToken}); e != nil {
+				t.Fatal(e)
+			}
+			if env, e := protocol.ReadMessage(br); e != nil || env.Type != protocol.MessageAuthOK {
+				t.Fatal(env, e)
+			}
+			hello := protocol.Hello{V: protocol.Version, Type: protocol.MessageHello, InstanceID: instance, Services: []protocol.Service{{Name: "files", Type: protocol.TypeStorage, Storage: &protocol.StorageService{MaxKeyBytes: 1017, MaxObjectBytes: 100, Encryption: "sse-s3"}}}}
 			if capable {
 				hello.Capabilities = []string{protocol.CapabilityStorage}
 			}
-			if e := protocol.WriteJSONLine(control, protocol.MaxControlBytes, hello); e != nil {
+			if e := protocol.WriteMessage(control, hello); e != nil {
 				t.Fatal(e)
 			}
-			var ack protocol.Message
-			if e := protocol.ReadJSONLine(bufio.NewReader(control), protocol.MaxControlBytes, &ack); e != nil {
+			env, e := protocol.ReadMessage(br)
+			var ack protocol.HelloAck
+			if e != nil || env.Decode(&ack) != nil {
 				t.Fatal(e)
 			}
 			if capable {
-				if len(ack.AcceptedRoutes) != 1 || len(ack.RejectedRoutes) != 0 {
+				if len(ack.Accepted) != 1 || len(ack.Rejected) != 0 {
 					t.Fatal(ack)
 				}
 			} else {
-				if len(ack.AcceptedRoutes) != 0 || len(ack.RejectedRoutes) != 1 || ack.RejectedRoutes[0].Reason != "storage_capability_missing" {
+				if len(ack.Accepted) != 0 || len(ack.Rejected) != 1 || ack.Rejected[0].Reason != "storage_capability_missing" {
 					t.Fatal(ack)
 				}
 				ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
@@ -97,7 +105,7 @@ func fakeStoragePeer(t *testing.T, g *Gateway, handler func(net.Conn)) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	p := &peer{mux: cloud, routes: map[string]protocol.Route{"files": {ID: "files", Type: "object_storage"}}, capabilities: map[string]bool{protocol.CapabilityStorage: true}, slots: make(chan struct{}, 4)}
+	p := &peer{mux: cloud, services: map[string]protocol.Service{"files": {Name: "files", Type: protocol.TypeStorage}}, capabilities: map[string]bool{protocol.CapabilityStorage: true}, slots: make(chan struct{}, 4)}
 	g.mu.Lock()
 	g.sessions[p] = true
 	g.mu.Unlock()
@@ -115,7 +123,7 @@ func TestStorageGatewayGetIntegrity(t *testing.T) {
 	for _, mode := range []string{"valid", "missing_marker", "missing_trailer", "wrong_hash", "trailing_byte", "long_body"} {
 		t.Run(mode, func(t *testing.T) {
 			_, key, _ := ed25519.GenerateKey(rand.Reader)
-			g, _ := New(testToken, "test", key)
+			g, _ := New(testToken, key)
 			defer g.Close()
 			fakeStoragePeer(t, g, func(c net.Conn) {
 				br := bufio.NewReader(c)
@@ -123,7 +131,7 @@ func TestStorageGatewayGetIntegrity(t *testing.T) {
 					return
 				}
 				size := int64(3)
-				result := protocol.StorageResult{V: 1, OK: true, Size: &size, ETag: "etag", ContentType: "text/plain", LastModified: "2026-10-11T00:00:00Z"}
+				result := protocol.StorageResult{V: protocol.Version, OK: true, Size: &size, ETag: "etag", ContentType: "text/plain", LastModified: "2026-10-11T00:00:00Z"}
 				if e := protocol.WriteStorageResult(c, result, "get"); e != nil {
 					return
 				}
@@ -160,7 +168,7 @@ func TestStorageGatewayGetIntegrity(t *testing.T) {
 			})
 			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 			defer cancel()
-			_, body, e := g.Storage(ctx, protocol.StreamHeader{Route: "files", Op: "get", Key: protocol.EncodeStorageKey("a")}, nil)
+			_, body, e := g.Storage(ctx, protocol.StreamHeader{Service: "files", Op: "get", Key: protocol.EncodeStorageKey("a")}, nil)
 			if e != nil {
 				t.Fatal(e)
 			}
@@ -178,7 +186,7 @@ func TestStorageGatewayGetIntegrity(t *testing.T) {
 }
 func TestStorageGatewayPutHalfClose(t *testing.T) {
 	_, key, _ := ed25519.GenerateKey(rand.Reader)
-	g, _ := New(testToken, "test", key)
+	g, _ := New(testToken, key)
 	defer g.Close()
 	verified := make(chan bool, 1)
 	fakeStoragePeer(t, g, func(c net.Conn) {
@@ -196,12 +204,12 @@ func TestStorageGatewayPutHalfClose(t *testing.T) {
 			return
 		}
 		n := int64(len(data))
-		protocol.WriteStorageResult(c, protocol.StorageResult{V: 1, OK: true, Size: &n, ETag: "etag"}, "put")
+		protocol.WriteStorageResult(c, protocol.StorageResult{V: protocol.Version, OK: true, Size: &n, ETag: "etag"}, "put")
 	})
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	size := int64(3)
-	result, body, e := g.Storage(ctx, protocol.StreamHeader{Route: "files", Op: "put", Key: protocol.EncodeStorageKey("a"), Size: &size}, strings.NewReader("abc"))
+	result, body, e := g.Storage(ctx, protocol.StreamHeader{Service: "files", Op: "put", Key: protocol.EncodeStorageKey("a"), Size: &size}, strings.NewReader("abc"))
 	if e != nil || !result.OK || body != nil {
 		t.Fatal(result, e)
 	}

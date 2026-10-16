@@ -58,7 +58,7 @@ func (h *Handler) head(ctx context.Context, key string) (protocol.StorageResult,
 	return infoResult(info), nil
 }
 func infoResult(info minio.ObjectInfo) protocol.StorageResult {
-	return protocol.StorageResult{V: 1, OK: true, Size: &info.Size, ETag: info.ETag, ContentType: info.ContentType, LastModified: info.LastModified.UTC().Format(time.RFC3339)}
+	return protocol.StorageResult{V: protocol.Version, OK: true, Size: &info.Size, ETag: info.ETag, ContentType: info.ContentType, LastModified: info.LastModified.UTC().Format(time.RFC3339)}
 }
 func (h *Handler) get(ctx context.Context, key string, header protocol.StreamHeader) (protocol.StorageResult, io.ReadCloser, int64, error) {
 	info, e := h.stat(ctx, key)
@@ -207,7 +207,7 @@ func (h *Handler) copy(ctx context.Context, src, dst string) (protocol.StorageRe
 	if e != nil {
 		return protocol.StorageResult{}, e
 	}
-	return protocol.StorageResult{V: 1, OK: true, Size: &info.Size, ETag: info.ETag}, nil
+	return protocol.StorageResult{V: protocol.Version, OK: true, Size: &info.Size, ETag: info.ETag}, nil
 }
 
 type exactReader struct {
@@ -249,7 +249,7 @@ func (h *Handler) list(ctx context.Context, key string, header protocol.StreamHe
 		}
 		start = h.cfg.Prefix + decoded
 	}
-	result := protocol.StorageResult{V: 1, OK: true, Objects: []protocol.StorageObject{}}
+	result := protocol.StorageResult{V: protocol.Version, OK: true, Objects: []protocol.StorageObject{}}
 	last := ""
 	encodedBytes := 128 + 1400 // Reserve the envelope and largest continuation token.
 	scanned := 0

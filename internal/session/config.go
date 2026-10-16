@@ -5,7 +5,6 @@ import (
 	"crypto/ed25519"
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/base64"
 	"errors"
 	"github.com/eidonix-ai/cletus-connector/internal/config"
 	"github.com/eidonix-ai/cletus-connector/internal/network"
@@ -30,13 +29,13 @@ func prepare(ctx context.Context, cfg *config.Config, version string) (Options, 
 	if e != nil {
 		return Options{}, e
 	}
-	keys := make(map[string]ed25519.PublicKey)
-	for id, s := range cfg.ServerKeys {
-		b, e := base64.StdEncoding.DecodeString(s)
-		if e != nil || len(b) != 32 {
-			return Options{}, errors.New("invalid pinned server key")
+	keys := []ed25519.PublicKey{}
+	for _, s := range cfg.ServerKeys {
+		k, e := protocol.ParsePublicKey(s)
+		if e != nil {
+			return Options{}, e
 		}
-		keys[id] = b
+		keys = append(keys, k)
 	}
 	tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12}
 	if cfg.TLS.CA == "file" {
@@ -72,7 +71,7 @@ func prepare(ctx context.Context, cfg *config.Config, version string) (Options, 
 	if _, _, err := protocol.ParseToken(strings.TrimSpace(string(token))); err != nil {
 		return Options{}, err
 	}
-	return Options{Server: cfg.Server, Token: strings.TrimSpace(string(token)), Version: version, Keys: keys, TLSConfig: tlsConfig, DialContext: policy.DialContext, refresh: policy.Refresh}, nil
+	return Options{Server: cfg.Server, Token: strings.TrimSpace(string(token)), Version: version, Keys: keys, TLSConfig: tlsConfig, DialContext: policy.DialContext, Proxy: http.ProxyFromEnvironment, refresh: policy.Refresh}, nil
 }
 
 func readToken(path string) ([]byte, error) {

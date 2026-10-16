@@ -34,7 +34,7 @@ func TestDeniedRequestsBeforeDial(t *testing.T) {
 			b.SetDeadline(time.Now().Add(time.Second))
 			go x.ServeStream(context.Background(), a)
 			go func() {
-				protocol.WriteStreamHeader(b, protocol.StreamHeader{V: 1, Route: "chat", Kind: "http"})
+				protocol.WriteStreamHeader(b, protocol.StreamHeader{V: protocol.Version, Service: "chat", Kind: "http"})
 				fmt.Fprintf(b, "POST %s HTTP/1.1\r\nHost: evil\r\nContent-Type: %s\r\nContent-Length: %d\r\n\r\n", tc.path, tc.ct, tc.size)
 			}()
 			r, e := http.ReadResponse(bufio.NewReader(b), nil)
@@ -128,11 +128,11 @@ func TestHealthAuthDiscoveryAndRecovery(t *testing.T) {
 			time.Sleep(10 * time.Millisecond)
 		}
 	}
-	wait(func() bool { s := x.StatusRoutes()[0]; return len(s.Models) == 1 && s.Models[0] == "test-model" })
+	wait(func() bool { s := x.StatusServices()[0]; return len(s.Models) == 1 && s.Models[0] == "test-model" })
 	fail.Store(true)
-	wait(func() bool { return !x.StatusRoutes()[0].Healthy })
+	wait(func() bool { return !x.StatusServices()[0].Healthy })
 	fail.Store(false)
-	wait(func() bool { return x.StatusRoutes()[0].Healthy })
+	wait(func() bool { return x.StatusServices()[0].Healthy })
 	if unauthorized.Load() {
 		t.Fatal("health or model discovery omitted local auth")
 	}

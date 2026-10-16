@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/eidonix-ai/cletus-connector/internal/config"
+	"github.com/eidonix-ai/cletus-connector/protocol"
 )
 
 // aliasUpstream records what the upstream actually received.
@@ -132,7 +133,7 @@ func TestAliasJSONRejectsAmbiguousBodies(t *testing.T) {
 	x, audit := aliasConnector(t, s.URL, "rerank")
 	for _, body := range []string{`{"model":"jina-reranker","model":"secret"}`, `{"model":"jina-reranker"`, `{"model":"jina-reranker"}{}`} {
 		resp, _ := reviewRequest(t, x, post("/v1/rerank", "application/json", body))
-		if resp.StatusCode != 400 || resp.Header.Get("X-Cletus-Connector-Error") != "invalid_request" {
+		if resp.StatusCode != 400 || resp.Header.Get(protocol.HeaderError) != "invalid_request" {
 			t.Fatalf("%s: got %d", body, resp.StatusCode)
 		}
 		if record := lastAudit(t, audit); record["error"] != "invalid_request" || record["status"] != float64(400) {
@@ -197,7 +198,7 @@ func TestAliasMultipartRewrite(t *testing.T) {
 	// Duplicate model fields are rejected rather than forwarded.
 	up.model.Store("")
 	resp, _ = reviewRequest(t, x, multipartRequest(t, [][2]string{{"model", "whisper"}, {"model", "secret"}}, file))
-	if resp.StatusCode != 400 || resp.Header.Get("X-Cletus-Connector-Error") != "invalid_request" || up.model.Load() != "" {
+	if resp.StatusCode != 400 || resp.Header.Get(protocol.HeaderError) != "invalid_request" || up.model.Load() != "" {
 		t.Fatalf("duplicate model: status %d, upstream model %v", resp.StatusCode, up.model.Load())
 	}
 }
@@ -223,7 +224,7 @@ func TestAliasModelListAndAdvertisement(t *testing.T) {
 		t.Fatalf("model list %s", data)
 	}
 	// Before discovery the advertised models are the aliases.
-	if got := x.HelloRoutes()[0].Models; !reflect.DeepEqual(got, []string{"jina-reranker", "nomic-embed", "whisper"}) {
+	if got := x.HelloServices()[0].Models; !reflect.DeepEqual(got, []string{"jina-reranker", "nomic-embed", "whisper"}) {
 		t.Fatalf("initial hello models %v", got)
 	}
 }
@@ -243,9 +244,9 @@ func TestAliasDiscoveryPresentsAliases(t *testing.T) {
 	defer x.Close()
 	want := []string{"nomic-embed", "other"}
 	deadline := time.Now().Add(4 * time.Second)
-	for !reflect.DeepEqual(x.StatusRoutes()[0].Models, want) || !reflect.DeepEqual(x.HelloRoutes()[0].Models, want) {
+	for !reflect.DeepEqual(x.StatusServices()[0].Models, want) || !reflect.DeepEqual(x.HelloServices()[0].Models, want) {
 		if time.Now().After(deadline) {
-			t.Fatalf("status models %v", x.StatusRoutes()[0].Models)
+			t.Fatalf("status models %v", x.StatusServices()[0].Models)
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
@@ -253,10 +254,10 @@ func TestAliasDiscoveryPresentsAliases(t *testing.T) {
 
 func TestAliasNamesReportedWithoutModelsEndpoint(t *testing.T) {
 	x, _ := aliasConnector(t, "http://127.0.0.1:1", "rerank")
-	if got := x.StatusRoutes()[0].Models; !reflect.DeepEqual(got, []string{"jina-reranker", "whisper"}) {
+	if got := x.StatusServices()[0].Models; !reflect.DeepEqual(got, []string{"jina-reranker", "whisper"}) {
 		t.Fatalf("status models %v", got)
 	}
-	if got := x.HelloRoutes()[0].Models; !reflect.DeepEqual(got, []string{"jina-reranker", "whisper"}) {
+	if got := x.HelloServices()[0].Models; !reflect.DeepEqual(got, []string{"jina-reranker", "whisper"}) {
 		t.Fatalf("hello models %v", got)
 	}
 }

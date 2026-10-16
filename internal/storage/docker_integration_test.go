@@ -112,8 +112,8 @@ func storageExchange(t *testing.T, h *Handler, header protocol.StreamHeader, bod
 		t.Fatal(e)
 	}
 	s.SetDeadline(time.Now().Add(20 * time.Second))
-	header.V = 1
-	header.Route = "files"
+	header.V = protocol.Version
+	header.Service = "files"
 	header.Kind = "storage"
 	header.RequestID = "docker-test"
 	if e = protocol.WriteStreamHeader(s, header); e != nil {
@@ -276,7 +276,7 @@ func TestDockerStorageSixOperations(t *testing.T) {
 	if e != nil {
 		t.Fatalf("write probe: %v (%v)", e, checks)
 	}
-	for object := range admin.ListObjects(context.Background(), cfg.Bucket, minio.ListObjectsOptions{Prefix: cfg.Prefix + ".cletus-connector/", Recursive: true}) {
+	for object := range admin.ListObjects(context.Background(), cfg.Bucket, minio.ListObjectsOptions{Prefix: cfg.Prefix + ".eidonix-connector/", Recursive: true}) {
 		if object.Err != nil {
 			t.Fatal(object.Err)
 		}
@@ -313,7 +313,7 @@ func TestDockerCommitAndConfinement(t *testing.T) {
 			})
 		}
 	}
-	for _, key := range []string{"../escape", "/absolute", "double//slash", "bad\\slash", "bad\x00key", "bad\u0085key", ".cletus-connector/probe/x", strings.Repeat("k", 1024)} {
+	for _, key := range []string{"../escape", "/absolute", "double//slash", "bad\\slash", "bad\x00key", "bad\u0085key", ".eidonix-connector/probe/x", strings.Repeat("k", 1024)} {
 		r, _ := storageExchange(t, h, protocol.StreamHeader{Op: "head", Key: b64(key)}, nil)
 		if c := errorCode(r); c != "invalid_key" && c != "key_too_long" {
 			t.Fatalf("key accepted: %q %v", key, r)
@@ -333,7 +333,7 @@ func TestDockerReplacementPaginationAndBudget(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = admin.PutObject(context.Background(), cfg.Bucket, cfg.Prefix+".cletus-connector/hidden", strings.NewReader("hidden"), 6, minio.PutObjectOptions{})
+	_, err = admin.PutObject(context.Background(), cfg.Bucket, cfg.Prefix+".eidonix-connector/hidden", strings.NewReader("hidden"), 6, minio.PutObjectOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}

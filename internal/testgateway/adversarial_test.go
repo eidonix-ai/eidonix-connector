@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"github.com/eidonix-ai/cletus-connector/internal/config"
+	"github.com/eidonix-ai/cletus-connector/protocol"
 	"github.com/gorilla/websocket"
 	"io"
 	"net/http"
@@ -202,7 +203,7 @@ func TestAdversarialOneWayWebSocketActivity(t *testing.T) {
 	route := config.Route{ID: "test", Type: "realtime_ws", Upstreams: []string{up.URL}, WebsocketPaths: []string{"/stream"}, IdleTimeout: "120ms", Health: config.Health{Interval: "1h"}}
 	rig := newRig(t, []config.Route{route})
 	d := websocket.Dialer{TLSClientConfig: rig.server.Client().Transport.(*http.Transport).TLSClientConfig.Clone()}
-	ws, _, e := d.Dial("wss"+strings.TrimPrefix(rig.server.URL, "https")+"/routes/test/stream", http.Header{"Authorization": {"Bearer " + testToken}})
+	ws, _, e := d.Dial("wss"+strings.TrimPrefix(rig.server.URL, "https")+"/services/test/stream", http.Header{"Authorization": {"Bearer " + testToken}})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -238,7 +239,7 @@ func TestAdversarialSilentResponseHitsIdle(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	if resp.StatusCode != 504 || resp.Header.Get("X-Cletus-Connector-Error") != "upstream_timeout" {
+	if resp.StatusCode != 504 || resp.Header.Get(protocol.HeaderError) != "upstream_timeout" {
 		t.Fatalf("idle response:%d %v", resp.StatusCode, resp.Header)
 	}
 	if time.Since(started) > 700*time.Millisecond {

@@ -1,4 +1,8 @@
-// Package protocol defines the shared connector wire protocol.
+// Package protocol defines the shared Eidonix connector wire protocol, version 2.
+//
+// The package has no dependencies on connector internals: the gateway side
+// vendors it as-is. Every exported type and constant is part of the frozen v2
+// contract.
 package protocol
 
 import (
@@ -8,68 +12,199 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"regexp"
 )
 
 const (
-	Version         = 1
-	Subprotocol     = "cletus-connector.v1"
+	Version         = 2
+	Subprotocol     = "eidonix-connector.v2"
+	SessionPath     = "/v1/connectors/session"
 	MaxControlBytes = 64 << 10
 	MaxHeaderBytes  = 4 << 10
+
+	// Upgrade request headers (connector → gateway). No Authorization header is sent.
+	HeaderNonce    = "X-Eidonix-Nonce"
+	HeaderInstance = "X-Eidonix-Instance"
+	// Upgrade response headers (gateway → connector): the server's identity proof.
+	HeaderServerKeyID     = "X-Eidonix-Server-Key-Id"
+	HeaderServerTime      = "X-Eidonix-Server-Time"
+	HeaderServerSignature = "X-Eidonix-Server-Signature"
+	// HeaderError carries the closed error code on connector-generated HTTP responses.
+	HeaderError = "X-Eidonix-Error"
+
+	// MaxStreamMetadataBytes bounds request_id, org_id, org_slug and user_key_id.
+	MaxStreamMetadataBytes = 64
 )
 
-type Route struct {
-	ID             string        `json:"id"`
-	Type           string        `json:"type"`
-	MethodsPaths   [][2]string   `json:"methods_paths"`
-	WebsocketPaths []string      `json:"websocket_paths,omitempty"`
-	MaxConcurrency int           `json:"max_concurrency"`
-	Healthy        bool          `json:"healthy"`
-	Models         []string      `json:"models,omitempty"`
-	Storage        *StorageRoute `json:"storage,omitempty"`
+// Service types, in the order configuration files and documentation list them.
+const (
+	TypeChat          = "chat"
+	TypeAnthropic     = "anthropic"
+	TypeEmbeddings    = "embeddings"
+	TypeRerank        = "rerank"
+	TypeTranscription = "transcription"
+	TypeSpeech        = "speech"
+	TypeImage         = "image"
+	TypeDocument      = "document"
+	TypeConversion    = "conversion"
+	TypeRealtime      = "realtime"
+	TypeStorage       = "storage"
+	TypeCustom        = "custom"
+)
+
+// ServiceTypes lists every service type in canonical order.
+var ServiceTypes = []string{TypeChat, TypeAnthropic, TypeEmbeddings, TypeRerank, TypeTranscription, TypeSpeech, TypeImage, TypeDocument, TypeConversion, TypeRealtime, TypeStorage, TypeCustom}
+
+// Control message types.
+const (
+	MessageAuth       = "auth"
+	MessageAuthOK     = "auth_ok"
+	MessageAuthFailed = "auth_failed"
+	MessageHello      = "hello"
+	MessageHelloAck   = "hello_ack"
+	MessageStatus     = "status"
+	MessagePing       = "ping"
+	MessagePong       = "pong"
+	MessageClose      = "close"
+)
+
+var servicePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,39}$`)
+
+// ValidServiceName reports whether s is a legal service name.
+func ValidServiceName(s string) bool { return servicePattern.MatchString(s) }
+
+// Service is one advertised service in hello. Models lists the names callers
+// may use (empty for types without models); ModelsAny means the owner allows
+// any model and Models is the discovered list.
+type Service struct {
+	Name                  string          `json:"name"`
+	Type                  string          `json:"type"`
+	Models                []string        `json:"models"`
+	ModelsAny             bool            `json:"models_any"`
+	MaxConcurrentRequests int             `json:"max_concurrent_requests"`
+	Healthy               bool            `json:"healthy"`
+	Storage               *StorageService `json:"storage,omitempty"`
 }
-type RouteStatus struct {
-	ID       string   `json:"id"`
+
+// ServiceStatus is one service in a status message. Models is always encoded;
+// an empty array means the service currently advertises no models.
+type ServiceStatus struct {
+	Name     string   `json:"name"`
 	Healthy  bool     `json:"healthy"`
 	InFlight int      `json:"in_flight"`
-	Models   []string `json:"models,omitempty"`
+	Models   []string `json:"models"`
 }
-type RejectedRoute struct {
-	ID     string `json:"id"`
+
+// Rejected names a service the gateway declined and why.
+type Rejected struct {
+	Name   string `json:"name"`
 	Reason string `json:"reason"`
 }
+
 type Limits struct {
 	MaxStreams int `json:"max_streams"`
 }
-type Message struct {
-	V              int             `json:"v"`
-	Type           string          `json:"type"`
-	InstanceID     string          `json:"instance_id,omitempty"`
-	Version        string          `json:"version,omitempty"`
-	OS             string          `json:"os,omitempty"`
-	Arch           string          `json:"arch,omitempty"`
-	Routes         []Route         `json:"routes,omitempty"`
-	UptimeS        int64           `json:"uptime_s,omitempty"`
-	SessionID      string          `json:"session_id,omitempty"`
-	Org            string          `json:"org,omitempty"`
-	AcceptedRoutes []string        `json:"accepted_routes,omitempty"`
-	RejectedRoutes []RejectedRoute `json:"rejected_routes,omitempty"`
-	Limits         Limits          `json:"limits,omitempty"`
-	Reason         string          `json:"reason,omitempty"`
-	Capabilities   []string        `json:"capabilities,omitempty"`
+
+// Auth is the first control message. The connector sends it only after it has
+// verified the server's identity proof on the upgrade response.
+type Auth struct {
+	V     int    `json:"v"`
+	Type  string `json:"type"`
+	Token string `json:"token"`
 }
 
-// StatusMessage uses the status-specific route shape.
-type StatusMessage struct {
-	V       int           `json:"v"`
-	Type    string        `json:"type"`
-	Routes  []RouteStatus `json:"routes"`
-	UptimeS int64         `json:"uptime_s"`
+// AuthResult answers Auth: auth_ok carries session_id and org (display name);
+// auth_failed carries reason, after which the gateway closes the session.
+type AuthResult struct {
+	V         int    `json:"v"`
+	Type      string `json:"type"`
+	SessionID string `json:"session_id,omitempty"`
+	Org       string `json:"org,omitempty"`
+	Reason    string `json:"reason,omitempty"`
 }
+
+type Hello struct {
+	V            int       `json:"v"`
+	Type         string    `json:"type"`
+	InstanceID   string    `json:"instance_id"`
+	Version      string    `json:"version"`
+	OS           string    `json:"os"`
+	Arch         string    `json:"arch"`
+	Capabilities []string  `json:"capabilities"`
+	Services     []Service `json:"services"`
+}
+
+// HelloAck lists accepted service names and rejected services with reasons.
+type HelloAck struct {
+	V        int        `json:"v"`
+	Type     string     `json:"type"`
+	Accepted []string   `json:"accepted"`
+	Rejected []Rejected `json:"rejected"`
+	Limits   Limits     `json:"limits"`
+}
+
+type Status struct {
+	V        int             `json:"v"`
+	Type     string          `json:"type"`
+	Services []ServiceStatus `json:"services"`
+	UptimeS  int64           `json:"uptime_s"`
+}
+
+// Control is ping, pong and close (with an optional reason).
+type Control struct {
+	V      int    `json:"v"`
+	Type   string `json:"type"`
+	Reason string `json:"reason,omitempty"`
+}
+
+// Envelope is a received control line: its version, type and raw bytes.
+type Envelope struct {
+	V    int
+	Type string
+	Raw  json.RawMessage
+}
+
+// Decode unmarshals the whole message into out.
+func (e Envelope) Decode(out any) error { return json.Unmarshal(e.Raw, out) }
+
+// ReadMessage reads one bounded control line. A version other than Version is an error.
+func ReadMessage(r *bufio.Reader) (Envelope, error) {
+	var raw json.RawMessage
+	if e := ReadJSONLine(r, MaxControlBytes, &raw); e != nil {
+		return Envelope{}, e
+	}
+	var head struct {
+		V    int    `json:"v"`
+		Type string `json:"type"`
+	}
+	if e := json.Unmarshal(raw, &head); e != nil {
+		return Envelope{}, e
+	}
+	if head.V != Version {
+		return Envelope{}, errors.New("unsupported control version")
+	}
+	if head.Type == "" {
+		return Envelope{}, errors.New("control message without type")
+	}
+	return Envelope{head.V, head.Type, raw}, nil
+}
+
+// WriteMessage writes one bounded control line.
+func WriteMessage(w io.Writer, m any) error { return WriteJSONLine(w, MaxControlBytes, m) }
+
+// StreamHeader opens every gateway-initiated stream. Service selects a locally
+// configured service; it never selects a host, URL, bucket, path or command.
+// RequestID is the gateway's request id; OrgID, OrgSlug and UserKeyID identify
+// the caller as the gateway reports it. The connector records them in its
+// access log and does not authorise on them.
 type StreamHeader struct {
 	V           int     `json:"v"`
-	Route       string  `json:"route"`
+	Service     string  `json:"service"`
 	Kind        string  `json:"kind"`
 	RequestID   string  `json:"request_id"`
+	OrgID       string  `json:"org_id,omitempty"`
+	OrgSlug     string  `json:"org_slug,omitempty"`
+	UserKeyID   string  `json:"user_key_id,omitempty"`
 	Op          string  `json:"op,omitempty"`
 	Key         string  `json:"key,omitempty"`
 	SrcKey      string  `json:"src_key,omitempty"`
@@ -115,10 +250,14 @@ func WriteJSONLine(w io.Writer, max int, value any) error {
 	}
 	return writeAll(w, b)
 }
+
+// ReadStreamHeader parses a stream header without dispatching its kind. The
+// request and caller metadata fields must be printable ASCII of at most
+// MaxStreamMetadataBytes.
 func ReadStreamHeader(r *bufio.Reader) (StreamHeader, error) {
 	var h StreamHeader
 	err := ReadJSONLine(r, MaxHeaderBytes, &h)
-	if err == nil && (h.V != Version || h.Route == "" || h.Kind == "") {
+	if err == nil && (h.V != Version || h.Service == "" || h.Kind == "" || !printable(h.RequestID, MaxStreamMetadataBytes) || !printable(h.OrgID, MaxStreamMetadataBytes) || !printable(h.OrgSlug, MaxStreamMetadataBytes) || !printable(h.UserKeyID, MaxStreamMetadataBytes)) {
 		err = errors.New("invalid stream header")
 	}
 	return h, err
@@ -168,4 +307,22 @@ func writeAll(w io.Writer, b []byte) error {
 		b = b[n:]
 	}
 	return nil
+}
+
+// MarshalJSON encodes a nil model list as [] so the field is always an array.
+func (s Service) MarshalJSON() ([]byte, error) {
+	type plain Service
+	if s.Models == nil {
+		s.Models = []string{}
+	}
+	return json.Marshal(plain(s))
+}
+
+// MarshalJSON encodes a nil model list as [] so an emptied list clears the gateway's copy.
+func (s ServiceStatus) MarshalJSON() ([]byte, error) {
+	type plain ServiceStatus
+	if s.Models == nil {
+		s.Models = []string{}
+	}
+	return json.Marshal(plain(s))
 }

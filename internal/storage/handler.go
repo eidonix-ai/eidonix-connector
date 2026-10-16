@@ -142,7 +142,7 @@ func (h *Handler) Serve(parent context.Context, raw net.Conn, br *bufio.Reader, 
 		e = err
 		entry.Size = info.Size
 		if err == nil {
-			result = protocol.StorageResult{V: 1, OK: true, Size: &info.Size, ETag: info.ETag}
+			result = protocol.StorageResult{V: protocol.Version, OK: true, Size: &info.Size, ETag: info.ETag}
 			entry.Verified = true
 			entry.Size = info.Size
 		}
@@ -150,7 +150,7 @@ func (h *Handler) Serve(parent context.Context, raw net.Conn, br *bufio.Reader, 
 		result, e = h.head(ctx, h.cfg.Prefix+key)
 	case "delete":
 		e = h.core.RemoveObject(ctx, h.cfg.Bucket, h.cfg.Prefix+key, minioRemoveOptions())
-		result = protocol.StorageResult{V: 1, OK: true}
+		result = protocol.StorageResult{V: protocol.Version, OK: true}
 	case "list":
 		result, e = h.list(ctx, key, header)
 	case "get":

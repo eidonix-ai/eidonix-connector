@@ -1,1 +1,1 @@
-{"v":1,"route":"chat","kind":"http","request_id":"r1"}
+{"v":2,"service":"chat","kind":"http","request_id":"r1","org_id":"7","org_slug":"example-org","user_key_id":"42"}

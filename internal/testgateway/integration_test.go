@@ -38,7 +38,7 @@ func newRig(t *testing.T, routes []config.Route) *rig {
 	if e != nil {
 		t.Fatal(e)
 	}
-	g, e := New(testToken, "test", key)
+	g, e := New(testToken, key)
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -53,7 +53,7 @@ func newRig(t *testing.T, routes []config.Route) *rig {
 	done := make(chan error, 1)
 	tlsConfig := server.Client().Transport.(*http.Transport).TLSClientConfig.Clone()
 	go func() {
-		done <- session.RunOptions(ctx, session.Options{Server: "https://127.0.0.1", Token: testToken, Keys: map[string]ed25519.PublicKey{"test": pub}, TLSConfig: tlsConfig, DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+		done <- session.RunOptions(ctx, session.Options{Server: "https://127.0.0.1", Token: testToken, Keys: []ed25519.PublicKey{pub}, TLSConfig: tlsConfig, DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			return (&net.Dialer{}).DialContext(ctx, network, server.Listener.Addr().String())
 		}}, c)
 	}()
@@ -211,7 +211,7 @@ func TestWebSocketRelay(t *testing.T) {
 	defer up.Close()
 	rig := newRig(t, []config.Route{{ID: "test", Type: "realtime_ws", Upstreams: []string{up.URL}, WebsocketPaths: []string{"/stream"}, Health: config.Health{Interval: "1h"}}})
 	d := websocket.Dialer{TLSClientConfig: rig.server.Client().Transport.(*http.Transport).TLSClientConfig.Clone()}
-	ws, resp, e := d.Dial("wss"+strings.TrimPrefix(rig.server.URL, "https")+"/routes/test/stream", http.Header{"Authorization": {"Bearer " + testToken}})
+	ws, resp, e := d.Dial("wss"+strings.TrimPrefix(rig.server.URL, "https")+"/services/test/stream", http.Header{"Authorization": {"Bearer " + testToken}})
 	if e != nil {
 		t.Fatalf("dial %v response %v", e, resp)
 	}
@@ -230,9 +230,9 @@ func TestWebSocketRelay(t *testing.T) {
 }
 func TestGatewayRequiresToken(t *testing.T) {
 	_, key, _ := ed25519.GenerateKey(rand.Reader)
-	g, _ := New(testToken, "test", key)
+	g, _ := New(testToken, key)
 	defer g.Close()
-	for _, path := range []string{"/status", "/v1/connectors/session", "/routes/test/v1/models"} {
+	for _, path := range []string{"/status", "/services/test/v1/models"} {
 		w := httptest.NewRecorder()
 		g.ServeHTTP(w, httptest.NewRequest("GET", path, nil))
 		if w.Code != 401 {

@@ -110,9 +110,9 @@ func (h *Handler) sweep(ctx context.Context, now time.Time) {
 			relative := strings.TrimPrefix(u.Key, h.cfg.Prefix)
 			checkRelative := relative
 			prefixBytes := len(h.cfg.Prefix)
-			if strings.HasPrefix(relative, ".cletus-connector/") {
-				checkRelative = strings.TrimPrefix(relative, ".cletus-connector/")
-				prefixBytes += len(".cletus-connector/")
+			if strings.HasPrefix(relative, protocol.ReservedKeySegment+"/") {
+				checkRelative = strings.TrimPrefix(relative, protocol.ReservedKeySegment+"/")
+				prefixBytes += len(protocol.ReservedKeySegment + "/")
 			}
 			if protocol.ValidateRelativeKey(checkRelative, prefixBytes, false) != nil {
 				continue
@@ -215,7 +215,7 @@ func (h *Handler) probe(ctx context.Context) (err error) {
 	if _, e := rand.Read(random); e != nil {
 		return e
 	}
-	key := h.cfg.Prefix + ".cletus-connector/probe/" + hex.EncodeToString(random)
+	key := h.cfg.Prefix + protocol.ReservedKeySegment + "/probe/" + hex.EncodeToString(random)
 	defer func() {
 		cleanup, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
