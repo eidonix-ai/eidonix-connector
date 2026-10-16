@@ -21,7 +21,7 @@ func (h *Handler) putOptions(contentType string, size int64) minio.PutObjectOpti
 		contentType = "application/octet-stream"
 	}
 	sse := h.sse
-	if size == 0 && h.cfg.Encryption.Mode == "sse-c" {
+	if size == 0 && h.cfg.Encryption == "sse-c" {
 		sse = nil
 	}
 	return minio.PutObjectOptions{ContentType: contentType, ServerSideEncryption: sse, DisableContentSha256: false}
@@ -39,7 +39,7 @@ func validInfo(info minio.ObjectInfo, max int64) bool {
 }
 func (h *Handler) stat(ctx context.Context, key string) (minio.ObjectInfo, error) {
 	info, e := h.core.StatObject(ctx, h.cfg.Bucket, key, minio.StatObjectOptions{ServerSideEncryption: h.sse})
-	if e != nil && h.cfg.Encryption.Mode == "sse-c" {
+	if e != nil && h.cfg.Encryption == "sse-c" {
 		empty, err := h.core.StatObject(ctx, h.cfg.Bucket, key, minio.StatObjectOptions{})
 		if err == nil && empty.Size == 0 {
 			info, e = empty, nil
@@ -67,7 +67,7 @@ func (h *Handler) get(ctx context.Context, key string, header protocol.StreamHea
 	}
 	n := info.Size
 	opts := minio.GetObjectOptions{ServerSideEncryption: h.sse}
-	if h.cfg.Encryption.Mode == "sse-c" && n == 0 {
+	if h.cfg.Encryption == "sse-c" && n == 0 {
 		opts.ServerSideEncryption = nil
 	}
 	if header.IfMatch != "" {

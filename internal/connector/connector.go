@@ -1,3 +1,7 @@
+// Package connector serves gateway streams against the locally configured
+// services. Each service type accepts exactly its fixed list of requests;
+// every outbound connection goes through a dialer pinned to the hosts the
+// configuration names.
 package connector
 
 import (
@@ -7,13 +11,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/eidonix-ai/eidonix-connector/internal/config"
-	"github.com/eidonix-ai/eidonix-connector/internal/modelalias"
-	"github.com/eidonix-ai/eidonix-connector/internal/network"
-	"github.com/eidonix-ai/eidonix-connector/internal/profiles"
-	"github.com/eidonix-ai/eidonix-connector/internal/storage"
-	"github.com/eidonix-ai/eidonix-connector/protocol"
-	"github.com/gorilla/websocket"
 	"io"
 	"log"
 	"math"
@@ -26,6 +23,14 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/eidonix-ai/eidonix-connector/internal/config"
+	"github.com/eidonix-ai/eidonix-connector/internal/models"
+	"github.com/eidonix-ai/eidonix-connector/internal/network"
+	"github.com/eidonix-ai/eidonix-connector/internal/servicetype"
+	"github.com/eidonix-ai/eidonix-connector/internal/storage"
+	"github.com/eidonix-ai/eidonix-connector/protocol"
+	"github.com/gorilla/websocket"
 )
 
 type upstream struct {
@@ -35,95 +40,74 @@ type upstream struct {
 	flight int
 	eject  time.Time
 }
-type route struct {
-	cfg       config.Route
+type service struct {
+	cfg       config.Service
+	typ       servicetype.Type
 	storage   *storage.Handler
 	upstreams []*upstream
 	flight    int
-	next      int
 	tokens    float64
 	last      time.Time
-	models    []string
-	aliases   *modelalias.Table
-}
-type Connector struct {
-	mu            sync.Mutex
-	routes        map[string]*route
-	order         []string
-	audit         *os.File
-	auditPath     string
-	auditMu       sync.Mutex
-	cancel        context.CancelFunc
-	storageInit   sync.WaitGroup
-	listener      net.Listener
-	healthAddress string
-	healthTarget  *atomic.Pointer[Connector]
+	models    []string       // advertised names
+	allow     *models.Policy // nil for models: any and types without models
+	// Size limits are internal defaults by type.
+	maxRequest, maxResponse int64
 }
 
+// healthInterval is servicetype.HealthInterval; tests shorten it.
+var healthInterval = servicetype.HealthInterval
+
+type Connector struct {
+	mu          sync.Mutex
+	services    map[string]*service
+	order       []string
+	audit       *os.File
+	auditPath   string
+	auditMu     sync.Mutex
+	cancel      context.CancelFunc
+	storageInit sync.WaitGroup
+}
+
+// New builds the services of a validated configuration and opens the access log.
 func New(c *config.Config) (*Connector, error) {
-	normalized, err := c.Normalized()
-	if err != nil {
-		return nil, err
-	}
-	c = normalized
 	ctx, cancel := context.WithCancel(context.Background())
-	x := &Connector{routes: map[string]*route{}, cancel: cancel, auditPath: c.AuditLog}
-	if c.AuditLog != "" {
-		f, e := os.OpenFile(c.AuditLog, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+	x := &Connector{services: map[string]*service{}, cancel: cancel, auditPath: c.AccessLog}
+	if c.AccessLog != "" {
+		f, e := os.OpenFile(c.AccessLog, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
 		if e != nil {
 			cancel()
 			return nil, e
 		}
 		x.audit = f
 	}
-	for _, cfg := range c.Routes {
-		r := &route{cfg: cfg, tokens: math.Max(1, cfg.RateLimit), last: time.Now(), aliases: modelalias.New(cfg.Models)}
-		// Until discovery succeeds (or when the upstream has no model list), report the aliases.
-		r.models = r.aliases.Names()
-		if cfg.Type == "object_storage" {
-			x.routes[cfg.ID] = r
-			x.order = append(x.order, cfg.ID)
+	for _, cfg := range c.Services {
+		s := &service{cfg: cfg, typ: cfg.Contract(), last: time.Now(), tokens: math.Max(1, float64(cfg.MaxRequestsPerMinute)), maxResponse: servicetype.MaxResponseBytes}
+		s.maxRequest = s.typ.MaxRequestBytes
+		if cfg.Models.Allowlist() {
+			s.allow = models.New(cfg.Models.Names, cfg.Models.Target)
+			s.models = s.allow.Names()
+		}
+		x.services[cfg.Name] = s
+		x.order = append(x.order, cfg.Name)
+		if cfg.Type == protocol.TypeStorage {
 			x.storageInit.Add(1)
-			go func() { defer x.storageInit.Done(); x.startStorage(ctx, r) }()
+			go func() { defer x.storageInit.Done(); x.startStorage(ctx, s) }()
 			continue
 		}
-		for _, s := range cfg.Upstreams {
-			p, e := network.New(ctx, []string{s}, cfg.AllowCIDRs)
+		for _, raw := range cfg.URLs {
+			p, e := network.New(ctx, []string{raw})
 			if e != nil {
 				x.Close()
-				return nil, e
+				return nil, fmt.Errorf("%s service %q: %w", cfg.Type, cfg.Name, e)
 			}
-			u, _ := url.Parse(s)
-			t := &http.Transport{Proxy: nil, DialContext: p.DialContext, DisableCompression: true, MaxResponseHeaderBytes: 64 << 10, ResponseHeaderTimeout: max(120*time.Second, routeIdle(cfg))}
-			r.upstreams = append(r.upstreams, &upstream{base: u, policy: p, client: &http.Client{Transport: t, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}})
+			u, _ := url.Parse(raw)
+			t := &http.Transport{Proxy: nil, DialContext: p.DialContext, DisableCompression: true, MaxResponseHeaderBytes: 64 << 10, ResponseHeaderTimeout: max(120*time.Second, cfg.IdleTimeout)}
+			s.upstreams = append(s.upstreams, &upstream{base: u, policy: p, client: &http.Client{Transport: t, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}})
 		}
-		x.routes[cfg.ID] = r
-		x.order = append(x.order, cfg.ID)
-		go x.health(ctx, r)
-		for _, u := range r.upstreams {
+		go x.health(ctx, s, healthInterval)
+		for _, u := range s.upstreams {
 			go x.refreshDNS(ctx, u)
 		}
-	}
-	if c.HealthListen != "" {
-		l, e := net.Listen("tcp", c.HealthListen)
-		if e != nil {
-			x.Close()
-			return nil, e
-		}
-		x.listener = l
-		x.healthAddress = c.HealthListen
-		x.healthTarget = &atomic.Pointer[Connector]{}
-		x.healthTarget.Store(x)
-		target := x.healthTarget
-		server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.Method != "GET" || r.URL.Path != "/health" {
-				http.NotFound(w, r)
-				return
-			}
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(target.Load().StatusServices())
-		}), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 30 * time.Second}
-		go server.Serve(l)
 	}
 	return x, nil
 }
@@ -131,14 +115,11 @@ func (x *Connector) Close() error {
 	x.cancel()
 	x.storageInit.Wait()
 	x.mu.Lock()
-	if x.listener != nil {
-		x.listener.Close()
-	}
-	for _, r := range x.routes {
-		if r.storage != nil {
-			r.storage.Close()
+	for _, s := range x.services {
+		if s.storage != nil {
+			s.storage.Close()
 		}
-		for _, u := range r.upstreams {
+		for _, u := range s.upstreams {
 			u.client.CloseIdleConnections()
 		}
 	}
@@ -150,151 +131,148 @@ func (x *Connector) Close() error {
 	}
 	return nil
 }
-func (x *Connector) healthy(r *route) bool {
-	if r.storage != nil {
-		return r.storage.Healthy()
+func (x *Connector) healthy(s *service) bool {
+	if s.cfg.Type == protocol.TypeStorage {
+		return s.storage != nil && s.storage.Healthy()
 	}
-	for _, u := range r.upstreams {
+	for _, u := range s.upstreams {
 		if time.Now().After(u.eject) {
 			return true
 		}
 	}
 	return false
 }
+
+// HelloServices advertises every configured service.
 func (x *Connector) HelloServices() []protocol.Service {
 	x.mu.Lock()
 	defer x.mu.Unlock()
 	out := []protocol.Service{}
-	for _, id := range x.order {
-		r := x.routes[id]
-		advertisement := protocol.Service{Name: id, Type: r.cfg.Type, MaxConcurrentRequests: r.cfg.MaxConcurrency, Healthy: x.healthy(r), Models: append([]string{}, r.models...)}
-		if r.cfg.Type == "object_storage" {
-			maxObject, _ := config.Bytes(r.cfg.MaxObjectBytes)
-			advertisement.Type = protocol.TypeStorage
-			advertisement.Storage = &protocol.StorageService{MaxKeyBytes: 1024 - len(r.cfg.Prefix), MaxObjectBytes: maxObject, Encryption: r.cfg.Encryption.Mode}
+	for _, name := range x.order {
+		s := x.services[name]
+		a := protocol.Service{Name: name, Type: s.cfg.Type, Models: append([]string{}, s.models...), ModelsAny: s.cfg.Models.Any, MaxConcurrentRequests: s.cfg.MaxConcurrentRequests, Healthy: x.healthy(s)}
+		if st := s.cfg.Storage; st != nil {
+			a.Storage = &protocol.StorageService{MaxKeyBytes: st.MaxKeyBytes(), MaxObjectBytes: st.MaxFileSize, Encryption: st.Encryption}
 		}
-		out = append(out, advertisement)
+		out = append(out, a)
 	}
 	return out
 }
+
+// StatusServices reports health, in-flight requests and the current model list.
 func (x *Connector) StatusServices() []protocol.ServiceStatus {
 	x.mu.Lock()
 	defer x.mu.Unlock()
 	out := []protocol.ServiceStatus{}
-	for _, id := range x.order {
-		r := x.routes[id]
-		flight := r.flight
-		if r.storage != nil {
-			flight = r.storage.InFlight()
+	for _, name := range x.order {
+		s := x.services[name]
+		flight := s.flight
+		if s.storage != nil {
+			flight = s.storage.InFlight()
 		}
-		out = append(out, protocol.ServiceStatus{Name: id, Healthy: x.healthy(r), Models: append([]string{}, r.models...), InFlight: flight})
+		out = append(out, protocol.ServiceStatus{Name: name, Healthy: x.healthy(s), Models: append([]string{}, s.models...), InFlight: flight})
 	}
 	return out
 }
-func (x *Connector) health(ctx context.Context, r *route) {
-	d, _ := time.ParseDuration(r.cfg.Health.Interval)
-	tick := time.NewTicker(d)
+
+// health probes GET <url>/health on every upstream: any response below 500
+// counts as healthy; dial errors, timeouts and 5xx eject the address for 30s.
+// Services with models: any also refresh their model list.
+func (x *Connector) health(ctx context.Context, s *service, interval time.Duration) {
+	tick := time.NewTicker(interval)
 	defer tick.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-tick.C:
-			for _, u := range r.upstreams {
+			for _, u := range s.upstreams {
 				c, cancel := context.WithTimeout(ctx, 5*time.Second)
 				err := u.policy.Refresh(c)
 				if err == nil {
-					req, _ := http.NewRequestWithContext(c, "GET", u.base.String()+r.cfg.Health.Path, nil)
-					for k, v := range r.cfg.UpstreamHeaders {
-						req.Header.Set(k, v)
-					}
+					req, _ := http.NewRequestWithContext(c, "GET", u.base.String()+servicetype.HealthPath, nil)
+					x.authorize(req.Header, s)
 					resp, e := u.client.Do(req)
-					if e == nil && resp.StatusCode == 404 && r.cfg.Flavor == "go-llm-proxy" {
-						resp.Body.Close()
-						req.URL.Path = "/v1/models"
-						resp, e = u.client.Do(req)
-					}
 					err = e
 					if e == nil {
 						io.Copy(io.Discard, io.LimitReader(resp.Body, 65536))
 						resp.Body.Close()
-						if resp.StatusCode >= 400 {
-							err = fmt.Errorf("health status")
+						if resp.StatusCode >= 500 {
+							err = fmt.Errorf("health status %d", resp.StatusCode)
 						}
 					}
 				}
-				if err == nil {
-					x.discover(c, r, u)
+				if err == nil && s.cfg.Models.Any {
+					x.discover(c, s, u)
 				}
 				cancel()
 				x.mu.Lock()
 				if err == nil {
 					u.eject = time.Time{}
-				}
-				if err != nil {
-					u.eject = time.Now().Add(30 * time.Second)
+				} else {
+					u.eject = time.Now().Add(servicetype.EjectFor)
 				}
 				x.mu.Unlock()
 			}
 		}
 	}
 }
-func (x *Connector) acquire(r *route) (*upstream, int) {
+
+// acquire reserves a request slot: busy at max_concurrent_requests,
+// rate_limited past max_requests_per_minute, upstream_unavailable when every
+// address is ejected. The least-loaded healthy address is chosen.
+func (x *Connector) acquire(s *service) (*upstream, string) {
 	x.mu.Lock()
 	defer x.mu.Unlock()
-	if r.flight >= r.cfg.MaxConcurrency {
-		return nil, 429
+	if s.flight >= s.cfg.MaxConcurrentRequests {
+		return nil, "busy"
 	}
 	now := time.Now()
-	if r.cfg.RateLimit > 0 {
-		r.tokens += now.Sub(r.last).Seconds() * r.cfg.RateLimit
-		if r.tokens > math.Max(1, r.cfg.RateLimit) {
-			r.tokens = math.Max(1, r.cfg.RateLimit)
+	if rate := float64(s.cfg.MaxRequestsPerMinute); rate > 0 {
+		s.tokens = math.Min(rate, s.tokens+now.Sub(s.last).Minutes()*rate)
+		s.last = now
+		if s.tokens < 1 {
+			return nil, "rate_limited"
 		}
-		r.last = now
-		if r.tokens < 1 {
-			return nil, 429
-		}
-		r.tokens--
+		s.tokens--
 	}
 	var chosen *upstream
-	for i := 0; i < len(r.upstreams); i++ {
-		u := r.upstreams[(r.next+i)%len(r.upstreams)]
+	for _, u := range s.upstreams {
 		if now.Before(u.eject) {
 			continue
 		}
-		if chosen == nil || r.cfg.Balance == "least_inflight" && u.flight < chosen.flight {
+		if chosen == nil || u.flight < chosen.flight {
 			chosen = u
-		}
-		if r.cfg.Balance == "round_robin" {
-			r.next = (r.next + i + 1) % len(r.upstreams)
-			break
 		}
 	}
 	if chosen == nil {
-		return nil, 502
+		return nil, "upstream_unavailable"
 	}
-	r.flight++
+	s.flight++
 	chosen.flight++
-	return chosen, 0
+	return chosen, ""
 }
-func (x *Connector) release(r *route, u *upstream, bad bool) {
+func (x *Connector) release(s *service, u *upstream, bad bool) {
 	x.mu.Lock()
 	defer x.mu.Unlock()
-	r.flight--
+	s.flight--
 	u.flight--
 	if bad {
-		for _, other := range r.upstreams {
+		for _, other := range s.upstreams {
 			if other != u && !time.Now().Before(other.eject) {
-				u.eject = time.Now().Add(30 * time.Second)
+				u.eject = time.Now().Add(servicetype.EjectFor)
 				break
 			}
 		}
 	}
 }
-func errorResponse(c net.Conn, status int, code string) {
+
+// errorResponse writes a connector-generated HTTP error carrying a closed error code.
+func errorResponse(c net.Conn, code string) int {
+	status := protocol.HTTPStatus(code)
 	body := code + "\n"
-	fmt.Fprintf(c, "HTTP/1.1 %d %s\r\n"+protocol.HeaderError+": %s\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", status, http.StatusText(status), code, len(body), body)
+	fmt.Fprintf(c, "HTTP/1.1 %d %s\r\n%s: %s\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", status, http.StatusText(status), protocol.HeaderError, code, len(body), body)
+	return status
 }
 
 type idleConn struct {
@@ -363,7 +341,6 @@ func (c *counted) Close() error {
 	c.readMu.Unlock()
 	return err
 }
-func routeIdle(r config.Route) time.Duration { d, _ := time.ParseDuration(r.IdleTimeout); return d }
 func timedOut(err error) bool {
 	var n net.Error
 	return errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &n) && n.Timeout())
@@ -373,7 +350,7 @@ func connectFailed(err error) bool {
 	return errors.As(err, &op) && op.Op == "dial"
 }
 
-// ReopenLogs changes the audit file without interrupting active streams.
+// ReopenLogs changes the access log file without interrupting active streams.
 func (x *Connector) ReopenLogs() error {
 	if x.auditPath == "" {
 		return nil
@@ -392,17 +369,47 @@ func (x *Connector) ReopenLogs() error {
 	return nil
 }
 
+// forwarded request headers; each type may add its own (e.g. Anthropic-Version).
 var forwarded = []string{"Content-Type", "Accept", "X-Request-Id"}
 
-func cleanHeaders(in http.Header) http.Header {
+func cleanHeaders(in http.Header, extra []string) http.Header {
 	h := make(http.Header)
-	for _, k := range forwarded {
+	for _, k := range append(forwarded, extra...) {
 		if v := in.Get(k); v != "" {
 			h.Set(k, v)
 		}
 	}
 	return h
 }
+
+// authorize adds the service's api_key, the only credential the connector sends upstream.
+func (x *Connector) authorize(h http.Header, s *service) {
+	if s.cfg.APIKey != "" {
+		h.Set("Authorization", "Bearer "+s.cfg.APIKey)
+	}
+}
+
+// allowed reports whether the service accepts this request (method WEBSOCKET for upgrades).
+func (s *service) allowed(method, path string) bool {
+	if s.cfg.Type == protocol.TypeCustom {
+		for _, r := range s.cfg.Paths {
+			if r.Method == method && r.Path == path {
+				return true
+			}
+		}
+		return false
+	}
+	return s.typ.Allows(method, path)
+}
+
+// upstreamPath maps the gateway-facing path through api_path.
+func (s *service) upstreamPath(path string) string {
+	if s.cfg.Type == protocol.TypeCustom {
+		return path
+	}
+	return s.typ.UpstreamPath(s.cfg.APIPath, path)
+}
+
 func (x *Connector) ServeStream(parent context.Context, raw net.Conn) {
 	defer raw.Close()
 	ctx, cancel := context.WithCancel(parent)
@@ -410,165 +417,144 @@ func (x *Connector) ServeStream(parent context.Context, raw net.Conn) {
 	go func() { <-ctx.Done(); raw.Close() }()
 	raw.SetDeadline(time.Now().Add(10 * time.Second))
 	br := bufio.NewReaderSize(raw, 4096)
-	var h protocol.StreamHeader
+	entry := &accessEntry{Status: 403}
 	storageAudit := false
-	method, auditPath := "", ""
-	status := 403
-	var in, out int64
-	upname, auditError := "", ""
-	var modelRewrite *modelalias.Rewrite
 	start := time.Now()
+	var h protocol.StreamHeader
 	defer func() {
-		if storageAudit {
-			return
-		}
-		x.auditMu.Lock()
-		defer x.auditMu.Unlock()
-		if x.audit != nil {
-			entry := map[string]any{"timestamp": time.Now().UTC(), "session": protocol.SessionID(ctx), "route": h.Service, "method": method, "path": auditPath, "status": status, "bytes_in": in, "bytes_out": out, "duration_ms": time.Since(start).Milliseconds(), "upstream": upname, "request_id": h.RequestID, "error": auditError}
-			if modelRewrite != nil {
-				// Model ids are metadata; request and response bodies are never logged.
-				entry["model"] = modelRewrite.Alias
-				entry["upstream_model"] = modelRewrite.Target
-			}
-			json.NewEncoder(x.audit).Encode(entry)
+		if !storageAudit {
+			entry.Time, entry.Session, entry.DurationMS = time.Now().UTC(), protocol.SessionID(ctx), time.Since(start).Milliseconds()
+			x.writeAccess(entry)
 		}
 	}()
 	var e error
 	h, e = protocol.ReadStreamHeader(br)
 	if e != nil {
-		h = protocol.StreamHeader{}
-		status = 400
-		auditError = "invalid_stream_header"
+		entry.Status, entry.Error = 400, "invalid_stream_header"
 		return
 	}
+	entry.Service, entry.RequestID, entry.OrgID, entry.OrgSlug, entry.UserKeyID = h.Service, h.RequestID, h.OrgID, h.OrgSlug, h.UserKeyID
 	x.mu.Lock()
-	r := x.routes[h.Service]
+	s := x.services[h.Service]
 	var storageHandler *storage.Handler
-	if r != nil {
-		storageHandler = r.storage
+	if s != nil {
+		storageHandler = s.storage
+		entry.Type = s.cfg.Type
 	}
 	x.mu.Unlock()
 	if h.Kind != "http" && h.Kind != "websocket" && h.Kind != "storage" {
-		status = 400
-		auditError = "unsupported_kind"
+		entry.Status, entry.Error = 400, "unsupported_kind"
 		protocol.WriteStorageResult(raw, protocol.StorageErrorResult("unsupported_kind"), "")
 		return
 	}
 	if h.Kind == "storage" {
-		if r == nil {
-			auditError = "route_not_found"
-			protocol.WriteStorageResult(raw, protocol.StorageErrorResult(auditError), h.Op)
+		switch {
+		case s == nil:
+			entry.Error = "route_not_found"
+		case s.cfg.Type != protocol.TypeStorage:
+			entry.Error = "wrong_route_type"
+		case storageHandler == nil:
+			entry.Error = "backend_unavailable"
+		default:
+			storageAudit = true
+			storageHandler.Serve(ctx, raw, br, h)
 			return
 		}
-		if r.cfg.Type != "object_storage" {
-			auditError = "wrong_route_type"
-			protocol.WriteStorageResult(raw, protocol.StorageErrorResult(auditError), h.Op)
-			return
-		}
-		if storageHandler == nil {
-			auditError = "backend_unavailable"
-			protocol.WriteStorageResult(raw, protocol.StorageErrorResult(auditError), h.Op)
-			return
-		}
-		storageAudit = true
-		storageHandler.Serve(ctx, raw, br, h)
+		protocol.WriteStorageResult(raw, protocol.StorageErrorResult(entry.Error), h.Op)
 		return
 	}
-	if r != nil && r.cfg.Type == "object_storage" {
-		auditError = "path_not_allowed"
-		errorResponse(raw, 403, auditError)
+	if s == nil {
+		entry.Error = "route_not_found"
+		entry.Status = errorResponse(raw, entry.Error)
 		return
 	}
-	if r == nil {
-		status = 404
-		errorResponse(raw, 404, "route_not_found")
+	if s.cfg.Type == protocol.TypeStorage {
+		entry.Error = "path_not_allowed"
+		entry.Status = errorResponse(raw, entry.Error)
 		return
 	}
-	idle, _ := time.ParseDuration(r.cfg.IdleTimeout)
-	c := &idleConn{Conn: raw, idle: idle}
+	c := &idleConn{Conn: raw, idle: s.cfg.IdleTimeout}
 	c.touch()
+	fail := func(code string) { entry.Error = code; entry.Status = errorResponse(c, code) }
 
 	header := []byte{}
 	for {
 		line, err := br.ReadSlice('\n')
 		header = append(header, line...)
 		if err != nil && err != bufio.ErrBufferFull || len(header) > 64<<10 {
-			errorResponse(c, 403, "invalid_headers")
+			fail("invalid_request")
 			return
 		}
 		if string(line) == "\r\n" {
 			break
 		}
 	}
-	br = bufio.NewReader(io.MultiReader(strings.NewReader(string(header)), br))
+	br = bufio.NewReader(io.MultiReader(bytes.NewReader(header), br))
 	req, e := http.ReadRequest(br)
 	if e != nil {
-		errorResponse(c, 403, "invalid_request")
+		fail("invalid_request")
 		return
 	}
 	defer func() { raw.Close(); req.Body.Close() }()
-	method, auditPath = req.Method, req.URL.Path
+	entry.Method, entry.Path = req.Method, req.URL.Path
 	path := req.RequestURI
-	if req.URL.IsAbs() || req.URL.Host != "" || profiles.ValidatePath(strings.Split(path, "?")[0]) != nil || strings.Contains(path, "?") && !(req.Method == "GET" && req.URL.Path == "/v1/models") {
-		errorResponse(c, 403, "path_not_allowed")
+	// Queries are never forwarded; they are tolerated (and dropped) only on GET.
+	if req.URL.IsAbs() || req.URL.Host != "" || servicetype.ValidatePath(strings.Split(path, "?")[0]) != nil || strings.Contains(path, "?") && req.Method != "GET" {
+		fail("path_not_allowed")
 		return
 	}
-	allowed := false
-	if h.Kind == "http" {
-		for _, p := range r.cfg.MethodsPaths {
-			allowed = allowed || p[0] == req.Method && p[1] == req.URL.Path
+	method := req.Method
+	if h.Kind == "websocket" {
+		if req.Method != "GET" {
+			fail("path_not_allowed")
+			return
 		}
-	} else if h.Kind == "websocket" && req.Method == "GET" {
-		for _, p := range r.cfg.WebsocketPaths {
-			allowed = allowed || p == req.URL.Path
-		}
+		method = servicetype.WebSocket
+	} else if req.Method != "GET" && req.Method != "POST" && req.Method != "PUT" {
+		fail("path_not_allowed")
+		return
 	}
-	if !allowed {
-		errorResponse(c, 403, "path_not_allowed")
+	if !s.allowed(method, req.URL.Path) {
+		fail("path_not_allowed")
 		return
 	}
 	if h.Kind == "http" && req.Method != "GET" {
 		ct, _, err := mime.ParseMediaType(req.Header.Get("Content-Type"))
-		types := r.cfg.ContentTypes
-		if len(types) == 0 {
-			types = profiles.Table[r.cfg.Type].ContentTypes
-		}
 		ok := false
-		for _, v := range types {
+		for _, v := range s.typ.ContentTypes {
 			ok = ok || ct == v
 		}
 		if err != nil || !ok {
-			errorResponse(c, 403, "content_type_not_allowed")
+			fail("content_type_not_allowed")
 			return
 		}
 	}
-	max, _ := config.Bytes(r.cfg.MaxRequestBytes)
-	if req.ContentLength > max {
-		status = 413
-		errorResponse(c, 413, "request_too_large")
+	maxBody := s.maxRequest
+	if req.ContentLength > maxBody {
+		fail("request_too_large")
 		return
 	}
-	u, fail := x.acquire(r)
-	if fail != 0 {
-		status = fail
-		code := "upstream_unavailable"
-		if fail == 429 {
-			code = "busy"
-		}
-		auditError = code
-		errorResponse(c, fail, code)
+	// An allowlisted service answers its own model list.
+	if s.allow != nil && req.Method == "GET" && req.URL.Path == "/v1/models" {
+		list := s.allow.ModelList()
+		fmt.Fprintf(c, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", len(list), list)
+		entry.Status, entry.BytesOut = 200, int64(len(list))
+		return
+	}
+	u, code := x.acquire(s)
+	if code != "" {
+		fail(code)
 		return
 	}
 	bad := false
-	defer func() { x.release(r, u, bad) }()
-	upname = u.base.Host
+	defer func() { x.release(s, u, bad) }()
+	entry.UpstreamHost = u.base.Host
 	if h.Kind == "websocket" {
-		status, in, out, bad = x.websocket(ctx, c, br, r, u, req)
+		entry.Status, entry.BytesIn, entry.BytesOut, bad = x.websocket(ctx, c, br, s, u, req)
 		return
 	}
-	body := &counted{r: req.Body, source: req.Body, max: max, touch: c.touch}
-	defer func() { raw.Close(); body.Close(); in = body.n.Load() }()
+	body := &counted{r: req.Body, source: req.Body, max: maxBody, touch: c.touch}
+	defer func() { raw.Close(); body.Close(); entry.BytesIn = body.n.Load() }()
 	body.r = &endReader{Reader: req.Body, remaining: req.ContentLength, end: func() {
 		go func() {
 			var b [1]byte
@@ -580,62 +566,87 @@ func (x *Connector) ServeStream(parent context.Context, raw net.Conn) {
 	}}
 	var upstreamBody io.Reader = body
 	upstreamLength := req.ContentLength
+	var startRewrite func() error
 	var rewriteInvalid atomic.Bool
-	var startRewrite func()
-	rewriteStarted := false
-	if r.aliases != nil && req.Method != "GET" {
+	setModel := func(r models.Result) {
+		entry.Model = r.Model
+		if r.Renamed() {
+			entry.UpstreamModel = r.Target
+		}
+	}
+	modelError := func(err error) {
+		switch {
+		case body.overflow.Load():
+			fail("request_too_large")
+		case errors.Is(err, models.ErrNotAllowed):
+			fail("model_not_allowed")
+		case errors.Is(err, models.ErrRequired):
+			fail("model_required")
+		default:
+			fail("invalid_request")
+		}
+	}
+	if s.allow != nil && req.Method != "GET" {
 		ct, params, _ := mime.ParseMediaType(req.Header.Get("Content-Type"))
 		switch ct {
 		case "application/json":
-			// Bounded by max_request_bytes (and the route's concurrency) like any request body.
+			// Bounded by the type's request limit (and the service's concurrency) like any body.
 			data, err := io.ReadAll(body)
 			if err != nil {
-				status, auditError = 400, "invalid_request"
-				if body.overflow.Load() {
-					status, auditError = 413, "request_too_large"
-				}
-				errorResponse(c, status, auditError)
+				modelError(err)
 				return
 			}
-			rewritten, rw, err := r.aliases.RewriteJSON(data)
+			rewritten, r, err := s.allow.RewriteJSON(data)
+			if r.Model != "" {
+				entry.Model = r.Model
+			}
 			if err != nil {
-				status, auditError = 400, "invalid_request"
-				errorResponse(c, status, auditError)
+				modelError(err)
 				return
 			}
-			modelRewrite = rw
+			setModel(r)
 			upstreamBody, upstreamLength = bytes.NewReader(rewritten), int64(len(rewritten))
 		case "multipart/form-data":
-			// Streamed part by part; the rewritten length is unknown, so the upstream request is chunked.
+			// Streamed part by part; nothing is sent upstream until the model is accepted.
 			pr, pw := io.Pipe()
-			finished := make(chan *modelalias.Rewrite, 1)
-			startRewrite = func() {
+			decision := make(chan error, 1)
+			finished := make(chan struct{})
+			started := false
+			startRewrite = func() error {
+				started = true
 				go func() {
-					rw, err := r.aliases.RewriteMultipart(pw, body, params["boundary"])
-					if errors.Is(err, modelalias.ErrInvalid) {
+					defer close(finished)
+					err := s.allow.RewriteMultipart(pw, body, params["boundary"], func(r models.Result, err error) {
+						if r.Model != "" {
+							entry.Model = r.Model
+						}
+						if err == nil {
+							setModel(r)
+						}
+						decision <- err
+					})
+					if errors.Is(err, models.ErrInvalid) {
 						rewriteInvalid.Store(true)
 					}
 					pw.CloseWithError(err)
-					finished <- rw
 				}()
+				return <-decision
 			}
 			defer func() {
-				if !rewriteStarted {
+				if !started {
 					return
 				}
-				// Unblock the rewriter (client read or pipe write), then collect its result.
+				// Unblock the rewriter (client read or pipe write), then wait for it.
 				raw.Close()
 				pr.Close()
-				if rw := <-finished; rw != nil && !rewriteInvalid.Load() {
-					modelRewrite = rw
-				}
+				<-finished
 			}()
 			upstreamBody, upstreamLength = pr, -1
 		}
 	}
 	target := *u.base
-	target.Path = req.URL.Path
-	target.RawQuery = "" // Model-list queries are intentionally not forwarded.
+	target.Path = s.upstreamPath(req.URL.Path)
+	target.RawQuery = ""
 	requestCtx, cancelRequest := context.WithCancel(ctx)
 	defer cancelRequest()
 	up, e := http.NewRequestWithContext(requestCtx, req.Method, target.String(), upstreamBody)
@@ -643,91 +654,59 @@ func (x *Connector) ServeStream(parent context.Context, raw net.Conn) {
 		return
 	}
 	up.ContentLength = upstreamLength
-	up.Header = cleanHeaders(req.Header)
-	for k, v := range r.cfg.UpstreamHeaders {
-		up.Header.Set(k, v)
-	}
+	up.Header = cleanHeaders(req.Header, s.typ.Headers)
+	x.authorize(up.Header, s)
+	idle := s.cfg.IdleTimeout
 	var idleExpired atomic.Bool
 	timer := time.AfterFunc(idle, func() { idleExpired.Store(true); cancelRequest() })
 	defer timer.Stop()
 	body.touch = func() { c.touch(); timer.Reset(idle) }
 	if startRewrite != nil {
-		rewriteStarted = true
-		startRewrite()
+		if err := startRewrite(); err != nil {
+			modelError(err)
+			return
+		}
 	}
 	resp, e := u.client.Do(up)
 	if e != nil {
 		bad = connectFailed(e)
-		status = 502
-		auditError = "upstream_error"
+		code := "upstream_error"
 		if timedOut(e) || idleExpired.Load() {
-			status = 504
-			auditError = "upstream_timeout"
-		}
-		if rewriteInvalid.Load() {
-			status = 400
-			bad = false
-			auditError = "invalid_request"
+			code = "upstream_timeout"
 		}
 		if body.overflow.Load() {
-			status = 413
-			bad = false
-			auditError = "request_too_large"
+			bad, code = false, "request_too_large"
+		} else if rewriteInvalid.Load() {
+			bad, code = false, "invalid_request"
 		}
-		errorResponse(c, status, auditError)
+		fail(code)
 		return
 	}
 	defer resp.Body.Close()
 	c.touch()
 	timer.Reset(idle)
-	status = resp.StatusCode
-	bad = status == 502 || status == 503 || status == 504
+	entry.Status = resp.StatusCode
+	bad = resp.StatusCode == 502 || resp.StatusCode == 503 || resp.StatusCode == 504
 	resp.Trailer = nil
 	resp.Header = cleanResponse(resp.Header)
-	limit, _ := config.Bytes(r.cfg.MaxResponseBytes)
+	limit := s.maxResponse
 	if resp.ContentLength > limit {
-		status = 502
-		auditError = "response_too_large"
-		errorResponse(c, 502, "response_too_large")
+		fail("response_too_large")
 		return
 	}
-	responseBody := io.Reader(resp.Body)
-	if r.aliases != nil && req.Method == "GET" && req.URL.Path == "/v1/models" && resp.StatusCode == 200 {
-		// Present aliases instead of upstream ids. Only this small list is rewritten;
-		// other responses (including streams) pass through and may carry upstream ids.
-		const modelListLimit = 4 << 20
-		listed, err := io.ReadAll(io.LimitReader(resp.Body, modelListLimit+1))
-		if err != nil {
-			status = 502
-			auditError = "upstream_error"
-			if idleExpired.Load() || timedOut(err) {
-				status, auditError = 504, "upstream_timeout"
-			}
-			errorResponse(c, status, auditError)
-			return
-		}
-		if len(listed) <= modelListLimit {
-			listed, _ = r.aliases.RewriteModelList(listed)
-			responseBody = bytes.NewReader(listed)
-		} else {
-			responseBody = io.MultiReader(bytes.NewReader(listed), resp.Body)
-		}
-	}
-	counter := &counted{r: responseBody, max: limit, touch: func() { c.touch(); timer.Reset(idle) }}
+	counter := &counted{r: resp.Body, max: limit, touch: func() { c.touch(); timer.Reset(idle) }}
 	resp.Body = io.NopCloser(counter)
 	resp.ContentLength = -1
 	resp.TransferEncoding = []string{"chunked"}
 	resp.Close = true
 	writeErr := resp.Write(c)
-	out = counter.n.Load()
+	entry.BytesOut = counter.n.Load()
 	if counter.overflow.Load() {
-		status = 502
-		auditError = "response_too_large"
+		entry.Status, entry.Error = 502, "response_too_large"
 	} else if idleExpired.Load() || timedOut(writeErr) {
-		status = 504
-		auditError = "upstream_timeout"
+		entry.Status, entry.Error = 504, "upstream_timeout"
 	} else if writeErr != nil {
-		auditError = "response_interrupted"
+		entry.Error = "response_interrupted"
 	}
 }
 func cleanResponse(in http.Header) http.Header {
@@ -739,34 +718,32 @@ func cleanResponse(in http.Header) http.Header {
 	}
 	return h
 }
-func (x *Connector) websocket(ctx context.Context, c *idleConn, br *bufio.Reader, r *route, u *upstream, req *http.Request) (int, int64, int64, bool) {
+func (x *Connector) websocket(ctx context.Context, c *idleConn, br *bufio.Reader, s *service, u *upstream, req *http.Request) (int, int64, int64, bool) {
 	target := *u.base
 	if target.Scheme == "http" {
 		target.Scheme = "ws"
 	} else {
 		target.Scheme = "wss"
 	}
-	target.Path = req.URL.Path
-	d := websocket.Dialer{NetDialContext: u.policy.DialContext, HandshakeTimeout: c.idle}
-	headers := cleanHeaders(req.Header)
-	for k, v := range r.cfg.UpstreamHeaders {
-		headers.Set(k, v)
-	}
+	target.Path = s.upstreamPath(req.URL.Path)
+	d := websocket.Dialer{NetDialContext: u.policy.DialContext, HandshakeTimeout: c.idle, Proxy: nil}
+	headers := cleanHeaders(req.Header, s.typ.Headers)
+	x.authorize(headers, s)
 	ws, _, e := d.DialContext(ctx, target.String(), headers)
 	if e != nil {
-		errorResponse(c, 502, "upstream_error")
+		errorResponse(c, "upstream_error")
 		return 502, 0, 0, true
 	}
 	defer ws.Close()
 	fmt.Fprint(c, "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n")
-	max, _ := config.Bytes(r.cfg.MaxWebsocketMessageBytes)
-	ws.SetReadLimit(max)
+	max := servicetype.MaxWebSocketMessageBytes
+	ws.SetReadLimit(int64(max))
 	ws.UnderlyingConn().SetReadDeadline(time.Now().Add(c.idle))
 	done := make(chan error, 2)
 	var in, out int64
 	go func() {
 		for {
-			frame, e := protocol.ReadFrame(br, int(max))
+			frame, e := protocol.ReadFrame(br, max)
 			typ, p := frame.Type, frame.Payload
 			if e != nil {
 				done <- e
@@ -777,7 +754,7 @@ func (x *Connector) websocket(ctx context.Context, c *idleConn, br *bufio.Reader
 				done <- ws.WriteControl(websocket.CloseMessage, p, time.Now().Add(time.Second))
 				return
 			}
-			in += int64(len(p))
+			atomic.AddInt64(&in, int64(len(p)))
 			if e = ws.WriteMessage(int(typ), p); e != nil {
 				done <- e
 				return
@@ -793,8 +770,8 @@ func (x *Connector) websocket(ctx context.Context, c *idleConn, br *bufio.Reader
 				done <- e
 				return
 			}
-			out += int64(len(p))
-			if e = protocol.WriteFrame(c, protocol.Frame{Type: byte(typ), Payload: p}, int(max)); e != nil {
+			atomic.AddInt64(&out, int64(len(p)))
+			if e = protocol.WriteFrame(c, protocol.Frame{Type: byte(typ), Payload: p}, max); e != nil {
 				done <- e
 				return
 			}
@@ -811,7 +788,7 @@ func (x *Connector) websocket(ctx context.Context, c *idleConn, br *bufio.Reader
 	c.Close()
 	ws.Close()
 	<-done
-	return 101, in, out, false
+	return 101, atomic.LoadInt64(&in), atomic.LoadInt64(&out), false
 }
 
 type endReader struct {
@@ -832,20 +809,14 @@ func (r *endReader) Read(p []byte) (int, error) {
 	return n, e
 }
 
-func (x *Connector) discover(ctx context.Context, r *route, u *upstream) {
-	allowed := false
-	for _, p := range r.cfg.MethodsPaths {
-		if p == [2]string{"GET", "/v1/models"} {
-			allowed = true
-		}
-	}
-	if !allowed {
+// discover refreshes the advertised model list of a models: any service from
+// the server's own model list.
+func (x *Connector) discover(ctx context.Context, s *service, u *upstream) {
+	if !s.typ.Allows("GET", "/v1/models") {
 		return
 	}
-	req, _ := http.NewRequestWithContext(ctx, "GET", u.base.String()+"/v1/models", nil)
-	for k, v := range r.cfg.UpstreamHeaders {
-		req.Header.Set(k, v)
-	}
+	req, _ := http.NewRequestWithContext(ctx, "GET", u.base.String()+s.upstreamPath("/v1/models"), nil)
+	x.authorize(req.Header, s)
 	resp, e := u.client.Do(req)
 	if e != nil {
 		return
@@ -872,33 +843,8 @@ func (x *Connector) discover(ctx context.Context, r *route, u *upstream) {
 		}
 	}
 	x.mu.Lock()
-	r.models = r.aliases.Present(ids)
+	s.models = ids
 	x.mu.Unlock()
-}
-
-// NewReplacement reuses an unchanged health listener after construction succeeds.
-// The caller must serialize replacement and closing the prior connector.
-func NewReplacement(c *config.Config, old *Connector) (*Connector, error) {
-	old.mu.Lock()
-	reuse := c.HealthListen != "" && c.HealthListen == old.healthAddress
-	old.mu.Unlock()
-	if !reuse {
-		return New(c)
-	}
-	copyConfig := *c
-	copyConfig.HealthListen = ""
-	next, e := New(&copyConfig)
-	if e != nil {
-		return nil, e
-	}
-	old.mu.Lock()
-	next.listener = old.listener
-	next.healthAddress = old.healthAddress
-	next.healthTarget = old.healthTarget
-	old.listener = nil
-	old.healthTarget.Store(next)
-	old.mu.Unlock()
-	return next, nil
 }
 
 func (x *Connector) refreshDNS(ctx context.Context, u *upstream) {
@@ -914,9 +860,9 @@ func (x *Connector) refreshDNS(ctx context.Context, u *upstream) {
 			cancel()
 			if e != nil {
 				x.mu.Lock()
-				u.eject = time.Now().Add(30 * time.Second)
+				u.eject = time.Now().Add(servicetype.EjectFor)
 				x.mu.Unlock()
-				log.Printf("upstream %s DNS refresh rejected: %v", u.base.Host, e)
+				log.Printf("upstream %s marked unhealthy: %v", u.base.Host, e)
 			}
 		}
 	}
@@ -930,10 +876,10 @@ func (x *Connector) auditStorage(entry storage.AuditEntry) {
 	}
 }
 
-func (x *Connector) startStorage(ctx context.Context, r *route) {
+func (x *Connector) startStorage(ctx context.Context, s *service) {
 	for ctx.Err() == nil {
 		attempt, cancel := context.WithTimeout(ctx, 10*time.Second)
-		handler, err := storage.New(attempt, r.cfg, x.auditStorage)
+		handler, err := storage.New(attempt, s.cfg, x.auditStorage)
 		cancel()
 		if err == nil {
 			if ctx.Err() != nil {
@@ -941,12 +887,12 @@ func (x *Connector) startStorage(ctx context.Context, r *route) {
 				return
 			}
 			x.mu.Lock()
-			r.storage = handler
+			s.storage = handler
 			handler.Start(ctx)
 			x.mu.Unlock()
 			return
 		}
-		x.auditStorage(storage.AuditEntry{Timestamp: time.Now().UTC(), Origin: "local", Route: r.cfg.ID, Op: "initialize", Status: "backend_unavailable"})
+		x.auditStorage(storage.AuditEntry{Time: time.Now().UTC(), Origin: "local", Service: s.cfg.Name, Type: protocol.TypeStorage, Op: "initialize", Status: "backend_unavailable"})
 		timer := time.NewTimer(time.Minute)
 		select {
 		case <-ctx.Done():

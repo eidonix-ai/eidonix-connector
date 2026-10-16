@@ -13,31 +13,35 @@ import (
 	"time"
 
 	"github.com/eidonix-ai/eidonix-connector/internal/config"
+	"github.com/eidonix-ai/eidonix-connector/internal/servicetype"
 	"github.com/eidonix-ai/eidonix-connector/protocol"
 )
 
 func TestStorageDispatchAndPrivateAdvertisement(t *testing.T) {
-	cfg := config.Route{ID: "files", Type: "object_storage", Endpoint: "https://storage.corp.example", Bucket: "private-bucket-sentinel", Prefix: "documents/", CredentialsFile: "private-credential-sentinel", Encryption: config.Encryption{Mode: "sse-c", KeyFile: "private-key-sentinel"}, MaxObjectBytes: "5GiB", MaxConcurrency: 16}
-	x := &Connector{routes: map[string]*route{"files": {cfg: cfg}, "chat": {cfg: config.Route{ID: "chat", Type: "openai_chat"}}}, order: []string{"files", "chat"}}
+	st := config.StorageDefaults()
+	st.Endpoint, st.Bucket, st.Prefix, st.AccessKey, st.SecretKey, st.EncryptionKey = "https://storage.corp.example", "private-bucket-sentinel", "documents/", "private-access-sentinel", "private-secret-sentinel", []byte("0123456789abcdef0123456789abcdef")
+	files := config.Service{Name: "files", Type: protocol.TypeStorage, MaxConcurrentRequests: 16, Storage: &st}
+	chatType, _ := servicetype.Lookup(protocol.TypeChat)
+	x := &Connector{services: map[string]*service{"files": {cfg: files}, "chat": {cfg: config.Service{Name: "chat", Type: protocol.TypeChat}, typ: chatType}}, order: []string{"files", "chat"}}
 	encoded, err := json.Marshal(x.HelloServices())
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, secret := range []string{cfg.Bucket, cfg.Prefix, cfg.Endpoint, cfg.CredentialsFile, cfg.Encryption.KeyFile} {
+	for _, secret := range []string{st.Bucket, st.Prefix, st.Endpoint, st.AccessKey, st.SecretKey, string(st.EncryptionKey)} {
 		if strings.Contains(string(encoded), secret) {
 			t.Fatal("private configuration advertised")
 		}
 	}
-	route := x.HelloServices()[0]
-	if route.Storage == nil || route.Storage.MaxKeyBytes != 1024-len(cfg.Prefix) || route.Storage.MaxObjectBytes != 5<<30 || route.Healthy {
-		t.Fatal(route)
+	svc := x.HelloServices()[0]
+	if svc.Type != protocol.TypeStorage || svc.Storage == nil || svc.Storage.MaxKeyBytes != 1024-len(st.Prefix) || svc.Storage.MaxObjectBytes != 5<<30 || svc.Storage.Encryption != "sse-c" || svc.Healthy || svc.MaxConcurrentRequests != 16 {
+		t.Fatal(svc)
 	}
-	for _, tc := range []struct{ kind, route, want string }{{"future", "chat", "unsupported_kind"}, {"storage", "missing", "route_not_found"}, {"storage", "chat", "wrong_route_type"}, {"storage", "files", "backend_unavailable"}} {
+	for _, tc := range []struct{ kind, service, want string }{{"future", "chat", "unsupported_kind"}, {"storage", "missing", "route_not_found"}, {"storage", "chat", "wrong_route_type"}, {"storage", "files", "backend_unavailable"}} {
 		a, b := net.Pipe()
 		done := make(chan struct{})
 		go func() { defer close(done); x.ServeStream(context.Background(), b) }()
 		a.SetDeadline(time.Now().Add(time.Second))
-		protocol.WriteStreamHeader(a, protocol.StreamHeader{V: protocol.Version, Service: tc.route, Kind: tc.kind, RequestID: "r-1", Op: "head", Key: protocol.EncodeStorageKey("a")})
+		protocol.WriteStreamHeader(a, protocol.StreamHeader{V: protocol.Version, Service: tc.service, Kind: tc.kind, RequestID: "r-1", Op: "head", Key: protocol.EncodeStorageKey("a")})
 		result, err := protocol.ReadStorageResult(bufio.NewReader(a), "head")
 		a.Close()
 		<-done
@@ -61,20 +65,22 @@ func TestStorageDispatchAndPrivateAdvertisement(t *testing.T) {
 func TestStorageInitializationFailureKeepsInferenceAvailable(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "ready") }))
 	defer upstream.Close()
-	x, err := New(reviewConfig(upstream.URL))
+	x, err := New(chatConfig(t, upstream.URL))
 	if err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	storageRoute := &route{cfg: config.Route{ID: "files", Type: "object_storage", Endpoint: "invalid"}}
+	st := config.StorageDefaults()
+	st.Endpoint = "invalid"
+	storageService := &service{cfg: config.Service{Name: "files", Type: protocol.TypeStorage, Storage: &st}}
 	x.mu.Lock()
-	x.routes["files"] = storageRoute
+	x.services["files"] = storageService
 	x.order = append(x.order, "files")
 	x.mu.Unlock()
 	x.storageInit.Add(1)
-	go func() { defer x.storageInit.Done(); x.startStorage(ctx, storageRoute) }()
-	response, body := reviewRequest(t, x, "GET /v1/models HTTP/1.1\r\nHost: ignored\r\n\r\n")
+	go func() { defer x.storageInit.Done(); x.startStorage(ctx, storageService) }()
+	response, body := exchange(t, x, "chat", get("/v1/models"))
 	if response.StatusCode != 200 || string(body) != "ready" {
 		t.Fatal("storage initialization interrupted inference")
 	}

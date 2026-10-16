@@ -94,7 +94,7 @@ func (h *Handler) Serve(parent context.Context, raw net.Conn, br *bufio.Reader, 
 	io.ReadFull(br, buffered)
 	br = bufio.NewReader(io.MultiReader(bytes.NewReader(buffered), c))
 	start := time.Now()
-	entry := AuditEntry{Origin: "cloud", Session: protocol.SessionID(ctx), RequestID: safeRequestID(header.RequestID), Op: safeOp(header.Op), Status: "invalid_request"}
+	entry := AuditEntry{Origin: "upstream", Session: protocol.SessionID(ctx), RequestID: safeRequestID(header.RequestID), OrgSlug: header.OrgSlug, OrgID: header.OrgID, UserKeyID: header.UserKeyID, Op: safeOp(header.Op), Status: "invalid_request"}
 	defer func() { entry.DurationMS = time.Since(start).Milliseconds(); h.record(entry) }()
 	fail := func(err error) {
 		entry.Status = code(err)

@@ -13,14 +13,14 @@ import (
 
 func TestInitializeDevelopmentCredentials(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "state")
-	if err := initialize(dir, "http://127.0.0.1:8000"); err != nil {
+	if err := initialize(dir, "http://127.0.0.1:8000", "127.0.0.1:8443"); err != nil {
 		t.Fatal(err)
 	}
-	cfg, err := config.Load(filepath.Join(dir, "config.toml"))
+	cfg, err := config.Load(filepath.Join(dir, "connector.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Server != "https://127.0.0.1" || len(cfg.Routes) != 1 {
+	if cfg.Upstream.URL != "https://127.0.0.1:8443" || len(cfg.Services) != 1 || cfg.Upstream.CACertificate == "" {
 		t.Fatal("unexpected development config")
 	}
 	token, err := os.ReadFile(filepath.Join(dir, "token"))
@@ -37,10 +37,10 @@ func TestInitializeDevelopmentCredentials(t *testing.T) {
 	if _, err = tls.LoadX509KeyPair(filepath.Join(dir, "tls.pem"), filepath.Join(dir, "tls.key")); err != nil {
 		t.Fatal(err)
 	}
-	if err = initialize(dir, "http://127.0.0.1:9999"); err == nil {
+	if err = initialize(dir, "http://127.0.0.1:9999", "127.0.0.1:8443"); err == nil {
 		t.Fatal("existing state directory overwritten")
 	}
-	for _, name := range []string{"token", "identity.key", "tls.key"} {
+	for _, name := range []string{"token", "identity.key", "tls.key", "connector.yaml"} {
 		info, err := os.Stat(filepath.Join(dir, name))
 		if err != nil || info.Mode().Perm() != 0600 {
 			t.Fatalf("unsafe %s permissions", name)

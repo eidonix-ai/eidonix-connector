@@ -7,12 +7,12 @@ import (
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/xml"
 	"errors"
 	"github.com/eidonix-ai/eidonix-connector/internal/config"
 	"github.com/eidonix-ai/eidonix-connector/internal/network"
+	"github.com/eidonix-ai/eidonix-connector/protocol"
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
 	"github.com/minio/minio-go/v7/pkg/encrypt"
@@ -21,28 +21,35 @@ import (
 	"math"
 	"net/http"
 	"net/url"
-	"os"
 	"strings"
 	"sync"
 	"time"
 )
 
+// AuditEntry is one storage line of the access log. Keys are recorded only as
+// keyed hashes; object contents never are.
 type AuditEntry struct {
-	Timestamp        time.Time `json:"timestamp"`
+	Time             time.Time `json:"time"`
 	Origin           string    `json:"origin"`
 	Session          string    `json:"session"`
-	Route            string    `json:"route"`
-	RequestID        string    `json:"request_id"`
+	Service          string    `json:"service"`
+	Type             string    `json:"type"`
 	Op               string    `json:"op"`
 	KeyHash          string    `json:"key_hash"`
 	Status           string    `json:"status"`
 	Size             int64     `json:"size"`
 	Verified         bool      `json:"sha256_verified"`
 	DurationMS       int64     `json:"duration_ms"`
+	OrgSlug          string    `json:"org_slug"`
+	OrgID            string    `json:"org_id"`
+	UserKeyID        string    `json:"user_key_id"`
+	RequestID        string    `json:"request_id"`
 	UploadAgeSeconds int64     `json:"upload_age_s,omitempty"`
 }
 type Handler struct {
-	cfg                 config.Route
+	name                string
+	maxConcurrent       int
+	cfg                 config.Storage
 	core                *minio.Core
 	sse                 encrypt.ServerSide
 	policy              *network.Policy
@@ -65,35 +72,22 @@ type Handler struct {
 	maintenance         sync.WaitGroup
 }
 
-func New(ctx context.Context, cfg config.Route, audit func(AuditEntry)) (*Handler, error) {
-	if e := config.ValidateStorageRoute(&cfg); e != nil {
-		return nil, e
+// New builds a storage handler for a validated storage service. It never
+// touches the bucket; Start begins the read-only checks and maintenance.
+func New(ctx context.Context, svc config.Service, audit func(AuditEntry)) (*Handler, error) {
+	if svc.Storage == nil {
+		return nil, errors.New("not a storage service")
 	}
-	b, e := config.ReadSecret(cfg.CredentialsFile)
-	if e != nil {
-		return nil, e
-	}
-	lines := strings.Split(strings.TrimSuffix(string(b), "\n"), "\n")
-	if len(lines) != 2 || lines[0] == "" || lines[1] == "" {
-		return nil, errors.New("invalid storage credentials file")
-	}
-	var key []byte
-	if cfg.Encryption.Mode == "sse-c" {
-		b, e = config.ReadSecret(cfg.Encryption.KeyFile)
-		if e != nil {
-			return nil, e
-		}
-		key, e = base64.StdEncoding.DecodeString(strings.TrimSpace(string(b)))
-		if e != nil {
-			return nil, errors.New("invalid encryption key")
-		}
-	}
-	return newHandler(ctx, cfg, lines[0], lines[1], key, audit)
+	st := *svc.Storage
+	return newHandler(ctx, svc.Name, svc.MaxConcurrentRequests, st, st.AccessKey, st.SecretKey, st.EncryptionKey, audit)
 }
-func newHandler(ctx context.Context, cfg config.Route, accessKey, secretKey string, key []byte, audit func(AuditEntry)) (*Handler, error) {
+func newHandler(ctx context.Context, name string, maxConcurrent int, cfg config.Storage, accessKey, secretKey string, key []byte, audit func(AuditEntry)) (*Handler, error) {
 	u, e := url.Parse(cfg.Endpoint)
-	if e != nil || u.Hostname() == "" || u.Scheme != "https" && u.Scheme != "http" || cfg.Encryption.Mode == "sse-c" && u.Scheme != "https" || u.Scheme == "http" && !cfg.AllowInsecureHTTP {
+	if e != nil || u.Hostname() == "" || u.Scheme != "https" && u.Scheme != "http" || cfg.Encryption == "sse-c" && u.Scheme != "https" || u.Scheme == "http" && !cfg.AllowHTTP {
 		return nil, errors.New("invalid storage endpoint")
+	}
+	if maxConcurrent < 1 {
+		maxConcurrent = 1
 	}
 	origins := []string{cfg.Endpoint}
 	hosts := map[string]bool{u.Host: true}
@@ -105,7 +99,7 @@ func newHandler(ctx context.Context, cfg config.Route, accessKey, secretKey stri
 		origins = append(origins, v.String())
 		hosts[v.Host] = true
 	}
-	p, e := network.New(ctx, origins, cfg.AllowCIDRs)
+	p, e := network.New(ctx, origins)
 	if e != nil {
 		return nil, e
 	}
@@ -113,55 +107,49 @@ func newHandler(ctx context.Context, cfg config.Route, accessKey, secretKey stri
 	if e != nil {
 		ca = x509.NewCertPool()
 	}
-	if cfg.TLSCAFile != "" {
-		b, e := os.ReadFile(cfg.TLSCAFile)
-		if e != nil {
-			return nil, e
-		}
-		if !ca.AppendCertsFromPEM(b) {
-			return nil, errors.New("invalid storage CA file")
-		}
+	if cfg.CACertificate != "" && !ca.AppendCertsFromPEM([]byte(cfg.CACertificate)) {
+		return nil, errors.New("invalid storage ca_certificate")
 	}
-	idle, e := time.ParseDuration(cfg.IdleTimeout)
-	if e != nil || idle <= 0 {
-		idle = 300 * time.Second
+	idle := cfg.IdleTimeout
+	if idle <= 0 {
+		idle = config.DefaultStorageIdle
 	}
-	t := &http.Transport{Proxy: nil, DialContext: p.DialContext, TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: ca}, MaxResponseHeaderBytes: 64 << 10, DisableCompression: true, MaxIdleConnsPerHost: cfg.MaxConcurrency, IdleConnTimeout: 90 * time.Second, TLSHandshakeTimeout: idle}
+	t := &http.Transport{Proxy: nil, DialContext: p.DialContext, TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: ca}, MaxResponseHeaderBytes: 64 << 10, DisableCompression: true, MaxIdleConnsPerHost: maxConcurrent, IdleConnTimeout: 90 * time.Second, TLSHandshakeTimeout: idle}
 	rt := &boundedTransport{base: t, hosts: hosts, idle: idle}
 	c, e := minio.NewCore(u.Host, &minio.Options{Creds: credentials.NewStaticV4(accessKey, secretKey, ""), Secure: u.Scheme == "https", Region: cfg.Region, Transport: rt, BucketLookup: lookup, MaxRetries: 1})
 	if e != nil {
 		return nil, e
 	}
 	var sse encrypt.ServerSide
-	switch cfg.Encryption.Mode {
+	switch cfg.Encryption {
 	case "sse-c":
 		sse, e = encrypt.NewSSEC(key)
 	case "sse-s3":
 		sse = encrypt.NewSSE()
 	case "sse-kms":
-		sse, e = encrypt.NewSSEKMS(cfg.Encryption.KMSKeyID, nil)
+		sse, e = encrypt.NewSSEKMS(cfg.KMSKeyID, nil)
 	}
 	if e != nil {
 		return nil, e
 	}
-	max, e := config.Bytes(cfg.MaxObjectBytes)
-	if e != nil {
-		return nil, e
+	max, part, life, age := cfg.MaxFileSize, cfg.PartSize, cfg.MaxUploadLifetime, cfg.AbandonedUploadAge
+	if max <= 0 || max > protocol.MaxStorageObjectBytes {
+		max = protocol.MaxStorageObjectBytes
 	}
-	part, e := config.Bytes(cfg.PartSize)
-	if e != nil {
-		return nil, e
+	if part < protocol.MinStoragePartBytes || part > protocol.MaxStoragePartBytes {
+		part = protocol.DefaultStoragePartBytes
 	}
-	life, e := time.ParseDuration(cfg.MaxUploadLifetime)
-	if e != nil || life <= 0 {
-		life = 6 * time.Hour
+	if life <= 0 || life > protocol.MaxUploadLifetime {
+		life = protocol.MaxUploadLifetime
 	}
-	age, e := time.ParseDuration(cfg.AbandonedUploadAge)
-	if e != nil {
-		age = 24 * time.Hour
+	if age < config.DefaultAbandonedUploadAge {
+		age = config.DefaultAbandonedUploadAge
+	}
+	if cfg.MaxOpsPerSecond <= 0 {
+		cfg.MaxOpsPerSecond = config.DefaultStorageOps
 	}
 	auditHash := sha256.Sum256([]byte("cletus-storage-audit-v1\x00" + secretKey))
-	h := &Handler{cfg: cfg, core: c, sse: sse, policy: p, transport: t, audit: audit, auditKey: auditHash[:], max: max, part: part, idle: idle, lifetime: life, age: age, active: map[string]bool{}, tokens: math.Max(1, cfg.MaxOpsPerSecond), last: time.Now(), hour: time.Now()}
+	h := &Handler{name: name, maxConcurrent: maxConcurrent, cfg: cfg, core: c, sse: sse, policy: p, transport: t, audit: audit, auditKey: auditHash[:], max: max, part: part, idle: idle, lifetime: life, age: age, active: map[string]bool{}, tokens: math.Max(1, cfg.MaxOpsPerSecond), last: time.Now(), hour: time.Now()}
 	return h, nil
 }
 func (h *Handler) Healthy() bool { h.mu.Lock(); defer h.mu.Unlock(); return h.healthy }
@@ -183,15 +171,16 @@ func (h *Handler) hash(key string) string {
 }
 func (h *Handler) record(a AuditEntry) {
 	if h.audit != nil {
-		a.Timestamp = time.Now().UTC()
-		a.Route = h.cfg.ID
+		a.Time = time.Now().UTC()
+		a.Service = h.name
+		a.Type = protocol.TypeStorage
 		h.audit(a)
 	}
 }
 func (h *Handler) reserve() string {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if h.inflight >= h.cfg.MaxConcurrency {
+	if h.inflight >= h.maxConcurrent {
 		return "busy"
 	}
 	now := time.Now()
@@ -213,7 +202,7 @@ func (h *Handler) readBudget(n int64) bool {
 		h.hour = now
 		h.reads = 0
 	}
-	if h.cfg.MaxReadBytesPerHour > 0 && n > h.cfg.MaxReadBytesPerHour-h.reads {
+	if h.cfg.MaxReadPerHour > 0 && n > h.cfg.MaxReadPerHour-h.reads {
 		return false
 	}
 	h.reads += n
@@ -347,9 +336,9 @@ func (b *limitedBody) Read(p []byte) (int, error) {
 func (b *limitedBody) Close() error { b.finish(); return b.ReadCloser.Close() }
 func (h *Handler) warnings() {
 	if strings.HasPrefix(h.cfg.Endpoint, "http:") {
-		log.Printf("storage route %s uses explicitly enabled unencrypted HTTP", h.cfg.ID)
+		log.Printf("storage service %s uses http (allow_http is set)", h.name)
 	}
-	if h.cfg.Encryption.Mode == "none" {
-		log.Printf("storage route %s uses explicitly enabled encryption mode none", h.cfg.ID)
+	if h.cfg.Encryption == "none" {
+		log.Printf("storage service %s stores files without encryption (encryption: none)", h.name)
 	}
 }

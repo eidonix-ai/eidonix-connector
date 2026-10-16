@@ -21,8 +21,10 @@ import (
 func testHandler(t *testing.T, serve http.HandlerFunc, audit func(AuditEntry)) (*Handler, *httptest.Server) {
 	t.Helper()
 	server := httptest.NewServer(serve)
-	cfg := config.Route{ID: "files", Type: "object_storage", Endpoint: server.URL, Bucket: "test-bucket", Prefix: "objects/", PathStyle: true, Region: "us-east-1", Encryption: config.Encryption{Mode: "none"}, AllowUnencrypted: true, AllowInsecureHTTP: true, MaxObjectBytes: "10MiB", PartSize: "5MiB", MaxConcurrency: 2, MaxOpsPerSecond: 200, IdleTimeout: "2s", MaxUploadLifetime: "6h", AbandonedUploadAge: "24h"}
-	h, e := newHandler(context.Background(), cfg, "test-access", "test-secret", nil, audit)
+	cfg := config.StorageDefaults()
+	cfg.Endpoint, cfg.Bucket, cfg.Prefix, cfg.PathStyle, cfg.Encryption, cfg.AllowHTTP = server.URL, "test-bucket", "objects/", true, "none", true
+	cfg.MaxFileSize, cfg.PartSize, cfg.IdleTimeout = 10<<20, 5<<20, 2*time.Second
+	h, e := newHandler(context.Background(), "files", 2, cfg, "test-access", "test-secret", nil, audit)
 	if e != nil {
 		server.Close()
 		t.Fatal(e)
@@ -95,7 +97,7 @@ func TestRateAndAudit(t *testing.T) {
 }
 func TestReadBudget(t *testing.T) {
 	h, _ := testHandler(t, func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(500) }, nil)
-	h.cfg.MaxReadBytesPerHour = 3
+	h.cfg.MaxReadPerHour = 3
 	if !h.readBudget(3) || h.readBudget(1) {
 		t.Fatal("read budget not enforced")
 	}

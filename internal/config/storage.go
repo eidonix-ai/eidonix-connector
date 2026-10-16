@@ -2,140 +2,139 @@ package config
 
 import (
 	"encoding/base64"
-	"fmt"
-	"github.com/eidonix-ai/eidonix-connector/protocol"
-	"math"
-	"net"
 	"net/url"
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/eidonix-ai/eidonix-connector/protocol"
+	"gopkg.in/yaml.v3"
 )
 
-type Encryption struct {
-	Mode     string `toml:"mode,omitempty"`
-	KeyFile  string `toml:"key_file,omitempty"`
-	KMSKeyID string `toml:"kms_key_id,omitempty"`
+// Storage is a storage service's S3-compatible backend. Fields after
+// CACertificate are internal defaults, not settings.
+type Storage struct {
+	Endpoint       string
+	Bucket         string
+	Prefix         string
+	Region         string
+	AccessKey      string
+	SecretKey      string
+	Encryption     string
+	EncryptionKey  []byte
+	KMSKeyID       string
+	AllowHTTP      bool
+	MaxFileSize    int64
+	MaxReadPerHour int64
+	CACertificate  string
+
+	PathStyle          bool
+	PartSize           int64
+	MaxOpsPerSecond    float64
+	IdleTimeout        time.Duration
+	MaxUploadLifetime  time.Duration
+	AbandonedUploadAge time.Duration
 }
 
-func ValidateStorageRoute(r *Route) error {
-	u, e := url.Parse(r.Endpoint)
-	if e != nil || u.Hostname() == "" || strings.Contains(u.Hostname(), "%") || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" || (u.Scheme != "http" && u.Scheme != "https") {
-		return fmt.Errorf("storage endpoint must be an HTTP(S) origin")
-	}
-	if !r.PathStyle && net.ParseIP(u.Hostname()) != nil {
-		return fmt.Errorf("IP storage endpoints require path_style = true")
-	}
-	if r.Encryption.Mode == "" {
-		r.Encryption.Mode = "none"
-	}
-	switch r.Encryption.Mode {
-	case "none", "sse-s3":
-		if r.Encryption.Mode == "none" && !r.AllowUnencrypted {
-			return fmt.Errorf("none requires allow_unencrypted")
+// Storage defaults (v0.1 behaviour, now internal).
+const (
+	DefaultPartSize           = 16 << 20
+	DefaultStorageOps         = 200
+	DefaultStorageIdle        = 300 * time.Second
+	DefaultUploadLifetime     = 6 * time.Hour
+	DefaultAbandonedUploadAge = 24 * time.Hour
+)
+
+var bucketPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$`)
+
+// StorageDefaults returns a Storage with every internal default filled in.
+func StorageDefaults() Storage {
+	return Storage{Region: "us-east-1", Encryption: "sse-c", MaxFileSize: protocol.MaxStorageObjectBytes, PartSize: DefaultPartSize, MaxOpsPerSecond: DefaultStorageOps, IdleTimeout: DefaultStorageIdle, MaxUploadLifetime: DefaultUploadLifetime, AbandonedUploadAge: DefaultAbandonedUploadAge}
+}
+
+func parseStorage(s *Service, f map[string]*yaml.Node, n *yaml.Node, ctx string) error {
+	st := StorageDefaults()
+	for _, req := range []string{"endpoint", "bucket", "prefix", "access_key", "secret_key"} {
+		if f[req] == nil {
+			return at(n, ctx, "%s is required", req)
 		}
-		if r.Encryption.KeyFile != "" || r.Encryption.KMSKeyID != "" {
-			return fmt.Errorf("unexpected encryption key configuration")
+	}
+	var err error
+	strs := map[string]*string{"endpoint": &st.Endpoint, "bucket": &st.Bucket, "prefix": &st.Prefix, "region": &st.Region, "access_key": &st.AccessKey, "secret_key": &st.SecretKey, "encryption": &st.Encryption, "kms_key_id": &st.KMSKeyID}
+	for field, dst := range strs {
+		if v := f[field]; v != nil {
+			if *dst, err = line(v, ctx, field); err != nil {
+				return err
+			}
 		}
-	case "sse-kms":
-		if r.Encryption.KMSKeyID == "" || r.Encryption.KeyFile != "" {
-			return fmt.Errorf("sse-kms requires kms_key_id only")
+	}
+	if v := f["allow_http"]; v != nil {
+		if st.AllowHTTP, err = boolean(v, ctx, "allow_http"); err != nil {
+			return err
 		}
+	}
+	if v := f["max_file_size"]; v != nil {
+		if st.MaxFileSize, err = size(v, ctx, "max_file_size", protocol.MaxStorageObjectBytes); err != nil {
+			return err
+		}
+	}
+	if v := f["max_read_per_hour"]; v != nil {
+		if st.MaxReadPerHour, err = size(v, ctx, "max_read_per_hour", 1<<42); err != nil {
+			return err
+		}
+	}
+	if v := f["ca_certificate"]; v != nil {
+		if st.CACertificate, err = certificate(v, ctx); err != nil {
+			return err
+		}
+	}
+	u, e := url.Parse(st.Endpoint)
+	if e != nil || u.Hostname() == "" || strings.Contains(u.Hostname(), "%") || u.User != nil || (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" || (u.Scheme != "http" && u.Scheme != "https") || !validPort(u.Port()) {
+		return at(f["endpoint"], ctx, "endpoint must be https://host or https://host:port, without a path")
+	}
+	st.Endpoint = strings.TrimSuffix(st.Endpoint, "/")
+	if u.Scheme == "http" && !st.AllowHTTP {
+		return at(f["endpoint"], ctx, "endpoint uses http; storage needs https (set allow_http: true only for a trusted local network)")
+	}
+	st.PathStyle = !strings.HasSuffix(strings.ToLower(u.Hostname()), "amazonaws.com")
+	if !bucketPattern.MatchString(st.Bucket) || strings.Contains(st.Bucket, "..") {
+		return at(f["bucket"], ctx, "bucket %q is not a valid bucket name", st.Bucket)
+	}
+	if len(st.Prefix) > protocol.MaxStoragePrefixBytes || !strings.HasSuffix(st.Prefix, "/") || protocol.ValidateRelativeKey(st.Prefix, 0, false) != nil {
+		return at(f["prefix"], ctx, "prefix must be a folder name ending in / (for example cletus/)")
+	}
+	key := f["encryption_key"]
+	switch st.Encryption {
 	case "sse-c":
 		if u.Scheme != "https" {
-			return fmt.Errorf("sse-c requires HTTPS without exception")
+			return at(f["endpoint"], ctx, "encryption sse-c needs an https endpoint (the key is sent with every request)")
 		}
-		if r.Encryption.KeyFile == "" || r.Encryption.KMSKeyID != "" {
-			return fmt.Errorf("sse-c requires key_file only")
+		if key == nil {
+			return at(n, ctx, "encryption sse-c needs encryption_key (base64 of 32 random bytes; eidonix-connector generate-key makes one)")
 		}
-		b, e := ReadSecret(r.Encryption.KeyFile)
-		if e != nil {
-			return e
+		v, err := line(key, ctx, "encryption_key")
+		if err != nil {
+			return err
 		}
-		key, e := base64.StdEncoding.DecodeString(strings.TrimSpace(string(b)))
-		if e != nil || len(key) != 32 {
-			return fmt.Errorf("SSE-C key must encode exactly 32 bytes")
+		b, e := base64.StdEncoding.DecodeString(v)
+		if e != nil || len(b) != 32 {
+			return at(key, ctx, "encryption_key must be base64 of exactly 32 bytes (eidonix-connector generate-key makes one)")
+		}
+		st.EncryptionKey = b
+	case "sse-s3", "sse-kms", "none":
+		if key != nil {
+			return at(key, ctx, "encryption_key is used only with encryption: sse-c")
 		}
 	default:
-		return fmt.Errorf("invalid encryption mode")
+		return at(f["encryption"], ctx, "encryption must be sse-c, sse-s3, sse-kms or none")
 	}
-	if u.Scheme == "http" && !r.AllowInsecureHTTP {
-		return fmt.Errorf("HTTP storage requires allow_insecure_http")
+	if st.KMSKeyID != "" && st.Encryption != "sse-kms" {
+		return at(f["kms_key_id"], ctx, "kms_key_id is used only with encryption: sse-kms")
 	}
-	if r.Region == "" {
-		r.Region = "us-east-1"
-	}
-	if !regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$`).MatchString(r.Bucket) || strings.Contains(r.Bucket, "..") {
-		return fmt.Errorf("invalid storage bucket")
-	}
-	if len(r.Prefix) < 1 || len(r.Prefix) > 256 || !strings.HasSuffix(r.Prefix, "/") || ValidateStorageKey(r.Prefix, 0, false) != "" {
-		return fmt.Errorf("invalid storage prefix")
-	}
-	if r.CredentialsFile == "" {
-		return fmt.Errorf("storage credentials_file required")
-	}
-	b, e := ReadSecret(r.CredentialsFile)
-	if e != nil {
-		return e
-	}
-	lines := strings.Split(strings.TrimSuffix(string(b), "\n"), "\n")
-	if len(lines) != 2 || lines[0] == "" || lines[1] == "" || strings.ContainsAny(string(b), "\r\x00") {
-		return fmt.Errorf("credentials file requires access key and secret on two lines")
-	}
-	if r.MaxConcurrency == 0 {
-		r.MaxConcurrency = 16
-	}
-	if r.MaxConcurrency < 1 || r.MaxConcurrency > 256 {
-		return fmt.Errorf("storage concurrency must be 1..256")
-	}
-	if r.MaxObjectBytes == "" {
-		r.MaxObjectBytes = "5GiB"
-	}
-	n, e := Bytes(r.MaxObjectBytes)
-	if e != nil || n > 5<<30 {
-		return fmt.Errorf("max_object_bytes must be at most 5 GiB")
-	}
-	if r.PartSize == "" {
-		r.PartSize = "16MiB"
-	}
-	n, e = Bytes(r.PartSize)
-	if e != nil || n < 5<<20 || n > 64<<20 {
-		return fmt.Errorf("part_size must be 5..64 MiB")
-	}
-	if r.MaxOpsPerSecond == 0 {
-		r.MaxOpsPerSecond = 200
-	}
-	if r.MaxOpsPerSecond <= 0 || math.IsNaN(r.MaxOpsPerSecond) || math.IsInf(r.MaxOpsPerSecond, 0) || r.MaxReadBytesPerHour < 0 {
-		return fmt.Errorf("invalid storage rate/read budget")
-	}
-	if r.IdleTimeout == "" {
-		r.IdleTimeout = "300s"
-	}
-	if d, e := time.ParseDuration(r.IdleTimeout); e != nil || d <= 0 {
-		return fmt.Errorf("invalid storage idle timeout")
-	}
-	if r.AbandonedUploadAge == "" {
-		r.AbandonedUploadAge = "24h"
-	}
-	if d, e := time.ParseDuration(r.AbandonedUploadAge); e != nil || d < 24*time.Hour {
-		return fmt.Errorf("abandoned_upload_age must be at least 24h")
-	}
-	if r.MaxUploadLifetime == "" {
-		r.MaxUploadLifetime = "6h"
-	}
-	if d, e := time.ParseDuration(r.MaxUploadLifetime); e != nil || d <= 0 || d > 6*time.Hour {
-		return fmt.Errorf("max_upload_lifetime must be at most 6h")
-	}
-	if len(r.Upstreams) != 0 || r.Flavor != "" || len(r.MethodsPaths) != 0 || len(r.ExtraPaths) != 0 || len(r.WebsocketPaths) != 0 || len(r.UpstreamHeaders) != 0 || len(r.Models) != 0 {
-		return fmt.Errorf("storage route cannot contain inference settings")
-	}
-	return nil
+	s.Storage = &st
+	s.IdleTimeout = st.IdleTimeout
+	return parseLimits(s, map[string]*yaml.Node{"max_concurrent_requests": f["max_concurrent_requests"]}, ctx, 256)
 }
 
-// ValidateStorageKey checks raw keys before prefix concatenation.
-func ValidateStorageKey(key string, prefixBytes int, allowEmpty bool) string {
-	if e := protocol.ValidateRelativeKey(key, prefixBytes, allowEmpty); e != nil {
-		return e.(*protocol.StorageError).Code
-	}
-	return ""
-}
+// MaxKeyBytes is the largest relative key the service accepts.
+func (st Storage) MaxKeyBytes() int { return protocol.MaxStorageFullKeyBytes - len(st.Prefix) }

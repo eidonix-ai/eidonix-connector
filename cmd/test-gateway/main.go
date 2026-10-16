@@ -37,15 +37,15 @@ func main() {
 func run() error {
 	dir := flag.String("state", "./dev-state", "local development keys and config directory")
 	init := flag.Bool("init", false, "create development keys, token, and connector config, then exit")
-	upstream := flag.String("upstream", "http://127.0.0.1:8000", "chat upstream for generated config")
-	listen := flag.String("listen", "127.0.0.1:443", "loopback TLS address (connector requires port 443)")
+	upstream := flag.String("upstream", "http://127.0.0.1:8000", "chat server for the generated connector config")
+	listen := flag.String("listen", "127.0.0.1:8443", "loopback TLS address")
 	flag.Parse()
 	abs, err := filepath.Abs(*dir)
 	if err != nil {
 		return err
 	}
 	if *init {
-		return initialize(abs, *upstream)
+		return initialize(abs, *upstream, *listen)
 	}
 	host, _, err := net.SplitHostPort(*listen)
 	if err != nil || net.ParseIP(host) == nil || !net.ParseIP(host).IsLoopback() {
@@ -75,7 +75,7 @@ func run() error {
 	}
 	return err
 }
-func initialize(dir, upstream string) error {
+func initialize(dir, upstream, listen string) error {
 	// Mkdir, rather than MkdirAll, prevents accidental replacement of existing keys.
 	if err := os.Mkdir(dir, 0700); err != nil {
 		return err
@@ -110,16 +110,22 @@ func initialize(dir, upstream string) error {
 		return err
 	}
 	token := "cxn_" + strings.ToLower(base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(id)) + "_" + base64.RawURLEncoding.EncodeToString(secret)
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert})
 	var cfg bytes.Buffer
-	if err = config.Encode(&cfg, &config.Config{Server: "https://127.0.0.1", TokenFile: filepath.Join(dir, "token"), ServerKeys: map[string]string{"local-dev": base64.StdEncoding.EncodeToString(pub)}, TLS: config.TLS{CA: "file", CAFile: filepath.Join(dir, "tls.pem")}, AuditLog: filepath.Join(dir, "audit.jsonl"), Routes: []config.Route{{ID: "chat", Type: "openai_chat", Upstreams: []string{upstream}}}}); err != nil {
-		return err
+	fmt.Fprintf(&cfg, "# Development only: trusts this local test gateway, never a real upstream.\nupstream:\n  url: https://%s\n  token: %s\n  public_keys:\n    - %s\n  ca_certificate: |\n", listen, token, base64.StdEncoding.EncodeToString(pub))
+	for _, line := range strings.Split(strings.TrimSpace(string(certPEM)), "\n") {
+		fmt.Fprintf(&cfg, "    %s\n", line)
 	}
-	files := map[string][]byte{"identity.key": key, "tls.key": pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}), "tls.pem": pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert}), "token": []byte(token + "\n"), "config.toml": cfg.Bytes()}
+	fmt.Fprintf(&cfg, "chat:\n  - name: chat\n    url: %s\n    models: any\naccess_log: %s\n", upstream, filepath.Join(dir, "access.log"))
+	if _, err := config.Parse(cfg.Bytes()); err != nil {
+		return fmt.Errorf("generated config: %w", err)
+	}
+	files := map[string][]byte{"identity.key": key, "tls.key": pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}), "tls.pem": certPEM, "token": []byte(token + "\n"), "connector.yaml": cfg.Bytes()}
 	for name, data := range files {
 		if err = os.WriteFile(filepath.Join(dir, name), data, 0600); err != nil {
 			return err
 		}
 	}
-	fmt.Printf("Development keys and config created in %s\nRun test-gateway --state %q, then eidonix-connector run --config %q\n", dir, dir, filepath.Join(dir, "config.toml"))
+	fmt.Printf("Development keys and config created in %s\nRun test-gateway --state %q, then eidonix-connector run --config %q\n", dir, dir, filepath.Join(dir, "connector.yaml"))
 	return nil
 }

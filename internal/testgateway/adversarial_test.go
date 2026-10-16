@@ -3,9 +3,6 @@ package testgateway
 import (
 	"context"
 	"fmt"
-	"github.com/eidonix-ai/eidonix-connector/internal/config"
-	"github.com/eidonix-ai/eidonix-connector/protocol"
-	"github.com/gorilla/websocket"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -13,16 +10,18 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/eidonix-ai/eidonix-connector/protocol"
+	"github.com/gorilla/websocket"
 )
 
-func adversarialRoute(up string) config.Route {
-	return config.Route{ID: "test", Type: "openai_chat", Upstreams: []string{up}, Health: config.Health{Interval: "1h"}}
-}
+const adversarialChat = "chat:\n  - name: test\n    url: %s\n    models: any\n"
+
 func TestAdversarialPathsNeverContactUpstream(t *testing.T) {
 	var hits atomic.Int64
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hits.Add(1); w.WriteHeader(200) }))
 	defer up.Close()
-	rig := newRig(t, []config.Route{adversarialRoute(up.URL)})
+	rig := newRig(t, adversarialChat, up.URL)
 	for _, path := range []string{"/admin", "/v1/../admin", "/v1//chat/completions", "/v1/%2e%2e/admin", "/v1%2fchat/completions", "/v1/chat/completions?url=http://evil", "/" + strings.Repeat("a", 257)} {
 		resp, _ := request(t, rig.g, "POST", path, "application/json", "{}")
 		if resp.StatusCode != 403 {
@@ -44,9 +43,7 @@ func TestAdversarialHeadersAndRedirect(t *testing.T) {
 		w.WriteHeader(302)
 	}))
 	defer up.Close()
-	route := adversarialRoute(up.URL)
-	route.UpstreamHeaders = map[string]string{"Authorization": "Bearer local"}
-	rig := newRig(t, []config.Route{route})
+	rig := newRig(t, adversarialChat+"    api_key: local\n", up.URL)
 	req, _ := http.NewRequest("POST", "http://connector/v1/chat/completions", strings.NewReader("{}"))
 	req.Header.Set("Content-Type", "application/json")
 	for _, h := range []string{"Authorization", "Cookie", "X-Forwarded-For", "FileUrl"} {
@@ -71,56 +68,6 @@ func TestAdversarialHeadersAndRedirect(t *testing.T) {
 		t.Fatal("redirect followed")
 	}
 }
-func TestAdversarialUnknownLengthCaps(t *testing.T) {
-	t.Run("request", func(t *testing.T) {
-		var received atomic.Int64
-		up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			n, _ := io.Copy(io.Discard, r.Body)
-			received.Store(n)
-			w.Write([]byte("ok"))
-		}))
-		defer up.Close()
-		route := adversarialRoute(up.URL)
-		route.MaxRequestBytes = "64"
-		rig := newRig(t, []config.Route{route})
-		req, _ := http.NewRequest("POST", "http://connector/v1/chat/completions", io.NopCloser(strings.NewReader(strings.Repeat("x", 1000))))
-		req.Header.Set("Content-Type", "application/json")
-		req.ContentLength = -1
-		resp, e := rig.g.RoundTrip(req, "test")
-		if e != nil {
-			t.Fatal(e)
-		}
-		defer resp.Body.Close()
-		io.Copy(io.Discard, resp.Body)
-		if resp.StatusCode != 413 {
-			t.Fatalf("status%d", resp.StatusCode)
-		}
-		if received.Load() > 64 {
-			t.Fatalf("upstream received%d", received.Load())
-		}
-	})
-	t.Run("response", func(t *testing.T) {
-		up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.(http.Flusher).Flush()
-			w.Write([]byte(strings.Repeat("x", 1000)))
-		}))
-		defer up.Close()
-		route := adversarialRoute(up.URL)
-		route.MaxResponseBytes = "64"
-		rig := newRig(t, []config.Route{route})
-		req, _ := http.NewRequest("POST", "http://connector/v1/chat/completions", strings.NewReader("{}"))
-		req.Header.Set("Content-Type", "application/json")
-		resp, e := rig.g.RoundTrip(req, "test")
-		if e != nil {
-			t.Fatal(e)
-		}
-		defer resp.Body.Close()
-		b, e := io.ReadAll(resp.Body)
-		if e == nil || len(b) > 64 {
-			t.Fatalf("response cap bytes%d err%v", len(b), e)
-		}
-	})
-}
 func TestAdversarialConcurrencyAndCancelBeforeHeaders(t *testing.T) {
 	started := make(chan struct{})
 	stopped := make(chan struct{})
@@ -131,10 +78,7 @@ func TestAdversarialConcurrencyAndCancelBeforeHeaders(t *testing.T) {
 		close(stopped)
 	}))
 	defer up.Close()
-	route := adversarialRoute(up.URL)
-	route.MaxConcurrency = 1
-	route.IdleTimeout = "2s"
-	rig := newRig(t, []config.Route{route})
+	rig := newRig(t, adversarialChat+"    max_concurrent_requests: 1\n    idle_timeout: 2s\n", up.URL)
 	ctx, cancel := context.WithCancel(context.Background())
 	req, _ := http.NewRequestWithContext(ctx, "POST", "http://connector/v1/chat/completions", strings.NewReader("{}"))
 	req.Header.Set("Content-Type", "application/json")
@@ -177,9 +121,7 @@ func TestAdversarialActiveSSEHasNoTotalCap(t *testing.T) {
 		}
 	}))
 	defer up.Close()
-	route := adversarialRoute(up.URL)
-	route.IdleTimeout = "120ms"
-	rig := newRig(t, []config.Route{route})
+	rig := newRig(t, adversarialChat+"    idle_timeout: 120ms\n", up.URL)
 	resp, b := request(t, rig.g, "POST", "/v1/chat/completions", "application/json", "{}")
 	if resp.StatusCode != 200 || !strings.Contains(string(b), "data: 11") {
 		t.Fatalf("stream cut%d %q", resp.StatusCode, b)
@@ -200,10 +142,9 @@ func TestAdversarialOneWayWebSocketActivity(t *testing.T) {
 		}
 	}))
 	defer up.Close()
-	route := config.Route{ID: "test", Type: "realtime_ws", Upstreams: []string{up.URL}, WebsocketPaths: []string{"/stream"}, IdleTimeout: "120ms", Health: config.Health{Interval: "1h"}}
-	rig := newRig(t, []config.Route{route})
+	rig := newRig(t, "realtime:\n  - name: test\n    url: %s\n    idle_timeout: 120ms\n", up.URL)
 	d := websocket.Dialer{TLSClientConfig: rig.server.Client().Transport.(*http.Transport).TLSClientConfig.Clone()}
-	ws, _, e := d.Dial("wss"+strings.TrimPrefix(rig.server.URL, "https")+"/services/test/stream", http.Header{"Authorization": {"Bearer " + testToken}})
+	ws, _, e := d.Dial("wss"+strings.TrimPrefix(rig.server.URL, "https")+"/services/test/v1/stream", http.Header{"Authorization": {"Bearer " + testToken}})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -224,9 +165,7 @@ func TestAdversarialSilentResponseHitsIdle(t *testing.T) {
 		close(stopped)
 	}))
 	defer up.Close()
-	route := adversarialRoute(up.URL)
-	route.IdleTimeout = "120ms"
-	rig := newRig(t, []config.Route{route})
+	rig := newRig(t, adversarialChat+"    idle_timeout: 120ms\n", up.URL)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	req, _ := http.NewRequestWithContext(ctx, "POST", "http://connector/v1/chat/completions", strings.NewReader("{}"))

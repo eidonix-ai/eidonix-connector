@@ -3,10 +3,7 @@ package connector
 import (
 	"bufio"
 	"context"
-	"encoding/base64"
 	"fmt"
-	"github.com/eidonix-ai/eidonix-connector/internal/config"
-	"github.com/eidonix-ai/eidonix-connector/protocol"
 	"io"
 	"net"
 	"net/http"
@@ -14,27 +11,26 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/eidonix-ai/eidonix-connector/internal/servicetype"
+	"github.com/eidonix-ai/eidonix-connector/protocol"
 )
 
 func TestDeniedRequestsBeforeDial(t *testing.T) {
-	cfg := &config.Config{Server: "https://example.com", TokenFile: "/tmp/token", ServerKeys: map[string]string{"test": base64.StdEncoding.EncodeToString(make([]byte, 32))}, Routes: []config.Route{{ID: "chat", Type: "openai_chat", Upstreams: []string{"http://127.0.0.1:1"}, MaxRequestBytes: "4"}}}
-	x, e := New(cfg)
-	if e != nil {
-		t.Fatal(e)
-	}
-	defer x.Close()
+	x := newConnector(t, chatConfig(t, "http://127.0.0.1:1"))
+	x.services["chat"].maxRequest = 4
 	for _, tc := range []struct {
 		path, ct string
 		size     int
 		status   int
-	}{{"/admin", "application/json", 0, 403}, {"/v1/../admin", "application/json", 0, 403}, {"/v1//chat/completions", "application/json", 0, 403}, {"/v1/chat/completions?fetch=bad", "application/json", 0, 403}, {"/v1/chat/completions", "text/plain", 0, 403}, {"/v1/chat/completions", "application/json", 5, 413}} {
+	}{{"/admin", "application/json", 0, 403}, {"/v1/../admin", "application/json", 0, 403}, {"/v1//chat/completions", "application/json", 0, 403}, {"/v1/chat/completions?fetch=bad", "application/json", 0, 403}, {"/v1/completions", "application/json", 0, 403}, {"/v1/score", "application/json", 0, 403}, {"/v1/chat/completions", "text/plain", 0, 403}, {"/v1/chat/completions", "application/json", 5, 413}} {
 		t.Run(tc.path+tc.ct, func(t *testing.T) {
 			a, b := net.Pipe()
 			defer b.Close()
 			b.SetDeadline(time.Now().Add(time.Second))
 			go x.ServeStream(context.Background(), a)
 			go func() {
-				protocol.WriteStreamHeader(b, protocol.StreamHeader{V: protocol.Version, Service: "chat", Kind: "http"})
+				protocol.WriteStreamHeader(b, protocol.StreamHeader{V: protocol.Version, Service: "chat", Kind: "http", RequestID: "r"})
 				fmt.Fprintf(b, "POST %s HTTP/1.1\r\nHost: evil\r\nContent-Type: %s\r\nContent-Length: %d\r\n\r\n", tc.path, tc.ct, tc.size)
 			}()
 			r, e := http.ReadResponse(bufio.NewReader(b), nil)
@@ -49,43 +45,9 @@ func TestDeniedRequestsBeforeDial(t *testing.T) {
 	}
 }
 func TestHeaderSanitizing(t *testing.T) {
-	h := cleanHeaders(http.Header{"Authorization": {"secret"}, "Cookie": {"cookie"}, "Host": {"evil"}, "X-Forwarded-For": {"fake"}, "Content-Type": {"application/json"}, "Fileurl": {"http://evil"}})
+	h := cleanHeaders(http.Header{"Authorization": {"secret"}, "Cookie": {"cookie"}, "Host": {"evil"}, "X-Forwarded-For": {"fake"}, "Content-Type": {"application/json"}, "Fileurl": {"http://evil"}, "Anthropic-Version": {"2023-06-01"}}, nil)
 	if len(h) != 1 || h.Get("Content-Type") != "application/json" {
 		t.Fatalf("unsafe forwarded headers %v", h)
-	}
-}
-
-type trackedListener struct{ closed bool }
-
-func (l *trackedListener) Accept() (net.Conn, error) { return nil, fmt.Errorf("unused") }
-func (l *trackedListener) Close() error              { l.closed = true; return nil }
-func (l *trackedListener) Addr() net.Addr {
-	return &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 9877}
-}
-func TestReplacementReusesHealthListener(t *testing.T) {
-	cfg := &config.Config{Server: "https://example.com", TokenFile: "/tmp/token", ServerKeys: map[string]string{"test": base64.StdEncoding.EncodeToString(make([]byte, 32))}, Routes: []config.Route{{ID: "chat", Type: "openai_chat", Upstreams: []string{"http://127.0.0.1:1"}}}}
-	old, e := New(cfg)
-	if e != nil {
-		t.Fatal(e)
-	}
-	l := &trackedListener{}
-	old.listener = l
-	old.healthAddress = "127.0.0.1:9877"
-	old.healthTarget = &atomic.Pointer[Connector]{}
-	old.healthTarget.Store(old)
-	cfg.HealthListen = old.healthAddress
-	next, e := NewReplacement(cfg, old)
-	if e != nil {
-		old.Close()
-		t.Fatal(e)
-	}
-	old.Close()
-	if l.closed || next.healthTarget.Load() != next {
-		t.Fatal("listener closed or health target unchanged")
-	}
-	next.Close()
-	if !l.closed {
-		t.Fatal("new connector leaked listener")
 	}
 }
 
@@ -101,6 +63,8 @@ func TestHealthAuthDiscoveryAndRecovery(t *testing.T) {
 		if r.URL.Path == "/health" {
 			if fail.Load() {
 				w.WriteHeader(503)
+			} else {
+				w.WriteHeader(404) // any status below 500 counts as healthy
 			}
 			return
 		}
@@ -112,12 +76,10 @@ func TestHealthAuthDiscoveryAndRecovery(t *testing.T) {
 		http.NotFound(w, r)
 	}))
 	defer server.Close()
-	cfg := &config.Config{Server: "https://example.com", TokenFile: "/tmp/token", ServerKeys: map[string]string{"test": base64.StdEncoding.EncodeToString(make([]byte, 32))}, Routes: []config.Route{{ID: "chat", Type: "openai_chat", Upstreams: []string{server.URL}, Health: config.Health{Path: "/health", Interval: "1s"}, UpstreamHeaders: map[string]string{"Authorization": "Bearer local-secret"}}}}
-	x, e := New(cfg)
-	if e != nil {
-		t.Fatal(e)
-	}
-	defer x.Close()
+	healthInterval = 50 * time.Millisecond
+	defer func() { healthInterval = servicetype.HealthInterval }()
+	cfg := testConfig(t, "chat:\n  - name: chat\n    url: %s\n    models: any\n    api_key: local-secret\n", server.URL)
+	x := newConnector(t, cfg)
 	wait := func(check func() bool) {
 		t.Helper()
 		deadline := time.Now().Add(3 * time.Second)

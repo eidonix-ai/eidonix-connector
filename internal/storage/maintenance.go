@@ -79,7 +79,7 @@ func (h *Handler) startup(ctx context.Context) {
 	status := "ok"
 	if e != nil {
 		status = backendCode(e)
-		log.Printf("storage route %s read-only startup check failed: %s", h.cfg.ID, status)
+		log.Printf("storage service %s read-only startup check failed: %s", h.name, status)
 	}
 	h.record(AuditEntry{Origin: "local", Op: "startup_check", Status: status})
 }
@@ -95,7 +95,7 @@ func (h *Handler) sweep(ctx context.Context, now time.Time) {
 			h.warnedCleanup = true
 			h.mu.Unlock()
 			if warn {
-				log.Printf("storage route %s cannot list incomplete multipart uploads; use a bucket lifecycle cleanup rule", h.cfg.ID)
+				log.Printf("storage service %s cannot list incomplete multipart uploads; use a bucket lifecycle cleanup rule", h.name)
 			}
 			h.record(AuditEntry{Origin: "local", Op: "multipart_cleanup", Status: backendCode(e)})
 			return
@@ -186,7 +186,7 @@ func (h *Handler) Check(parent context.Context, writeProbe bool) ([]CheckResult,
 	if existing != nil {
 		_, e = h.stat(ctx, existing.Key)
 		appendCheck("existing_encryption", e, false)
-		if e != nil && h.cfg.Encryption.Mode == "sse-c" {
+		if e != nil && h.cfg.Encryption == "sse-c" {
 			out[len(out)-1].Message = "unable to verify configured encryption key; check key and permissions"
 		}
 		if e != nil {
@@ -248,7 +248,7 @@ func (h *Handler) probe(ctx context.Context) (err error) {
 	if e != nil || !bytes.Equal(got, data) {
 		return errBackendInvalid
 	}
-	if h.cfg.Encryption.Mode == "sse-c" {
+	if h.cfg.Encryption == "sse-c" {
 		plain, _, _, e := h.core.GetObject(ctx, h.cfg.Bucket, key, minio.GetObjectOptions{})
 		if e == nil {
 			plain.Close()

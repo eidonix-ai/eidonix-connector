@@ -3,10 +3,10 @@ module github.com/eidonix-ai/eidonix-connector
 go 1.27.2
 
 require (
-	github.com/BurntSushi/toml v1.6.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/hashicorp/yamux v0.1.2
 	github.com/minio/minio-go/v7 v7.3.0
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (

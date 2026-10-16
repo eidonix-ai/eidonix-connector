@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,50 +11,24 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/eidonix-ai/eidonix-connector/internal/config"
 	"github.com/eidonix-ai/eidonix-connector/protocol"
 )
 
-func reviewConfig(origin string) *config.Config {
-	return &config.Config{Server: "https://example.com", TokenFile: "unused", ServerKeys: map[string]string{"test": base64.StdEncoding.EncodeToString(make([]byte, 32))}, Routes: []config.Route{{ID: "chat", Type: "openai_chat", Upstreams: []string{origin}, Health: config.Health{Interval: "1h"}}}}
-}
-func reviewRequest(t *testing.T, x *Connector, request string) (*http.Response, []byte) {
-	t.Helper()
-	a, b := net.Pipe()
-	defer b.Close()
-	b.SetDeadline(time.Now().Add(2 * time.Second))
-	done := make(chan struct{})
-	go func() { defer close(done); x.ServeStream(context.Background(), a) }()
-	go func() {
-		protocol.WriteStreamHeader(b, protocol.StreamHeader{V: protocol.Version, Service: "chat", Kind: "http"})
-		io.WriteString(b, request)
-	}()
-	resp, err := http.ReadResponse(bufio.NewReader(b), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	data, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
-	b.Close()
-	<-done
-	return resp, data
-}
-func TestRouteHeaderTimeoutUsesConfiguredIdle(t *testing.T) {
-	cfg := reviewConfig("http://127.0.0.1:1")
-	cfg.Routes[0].IdleTimeout = "600s"
+func TestHeaderTimeoutUsesConfiguredIdle(t *testing.T) {
+	cfg := chatConfig(t, "http://127.0.0.1:1")
+	cfg.Services[0].IdleTimeout = 600 * time.Second
 	x, err := New(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer x.Close()
-	tr := x.routes["chat"].upstreams[0].client.Transport.(*http.Transport)
+	tr := x.services["chat"].upstreams[0].client.Transport.(*http.Transport)
 	if tr.ResponseHeaderTimeout != 600*time.Second {
 		t.Fatalf("timeout %v", tr.ResponseHeaderTimeout)
 	}
@@ -63,14 +36,14 @@ func TestRouteHeaderTimeoutUsesConfiguredIdle(t *testing.T) {
 func TestIdleBeforeResponseHeadersReturns504(t *testing.T) {
 	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { <-r.Context().Done() }))
 	defer s.Close()
-	cfg := reviewConfig(s.URL)
-	cfg.Routes[0].IdleTimeout = "30ms"
+	cfg := chatConfig(t, s.URL)
+	cfg.Services[0].IdleTimeout = 30 * time.Millisecond
 	x, err := New(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer x.Close()
-	resp, _ := reviewRequest(t, x, "GET /v1/models HTTP/1.1\r\nHost: ignored\r\n\r\n")
+	resp, _ := exchange(t, x, "chat", "GET /v1/models HTTP/1.1\r\nHost: ignored\r\n\r\n")
 	if resp.StatusCode != 504 || resp.Header.Get(protocol.HeaderError) != "upstream_timeout" {
 		t.Fatalf("got %d %v", resp.StatusCode, resp.Header)
 	}
@@ -79,13 +52,13 @@ func Test500DoesNotEjectSingleUpstream(t *testing.T) {
 	var count atomic.Int64
 	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { count.Add(1); w.WriteHeader(500) }))
 	defer s.Close()
-	x, err := New(reviewConfig(s.URL))
+	x, err := New(chatConfig(t, s.URL))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer x.Close()
 	for i := 0; i < 2; i++ {
-		resp, _ := reviewRequest(t, x, "GET /v1/models HTTP/1.1\r\nHost: ignored\r\n\r\n")
+		resp, _ := exchange(t, x, "chat", "GET /v1/models HTTP/1.1\r\nHost: ignored\r\n\r\n")
 		if resp.StatusCode != 500 {
 			t.Fatalf("request %d: %d", i, resp.StatusCode)
 		}
@@ -93,7 +66,7 @@ func Test500DoesNotEjectSingleUpstream(t *testing.T) {
 	if count.Load() != 2 || !x.StatusServices()[0].Healthy {
 		t.Fatal("500 ejected upstream")
 	}
-	r := x.routes["chat"]
+	r := x.services["chat"]
 	u := r.upstreams[0]
 	r.flight++
 	u.flight++
@@ -119,12 +92,12 @@ func TestResponseTrailersAndModelQueriesDropped(t *testing.T) {
 		w.Header().Set("X-Internal-Secret", "SENTINEL_SECRET")
 	}))
 	defer s.Close()
-	x, err := New(reviewConfig(s.URL))
+	x, err := New(chatConfig(t, s.URL))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer x.Close()
-	resp, data := reviewRequest(t, x, "GET /v1/models?fetch=http%3A%2F%2Fexample.com HTTP/1.1\r\nHost: ignored\r\n\r\n")
+	resp, data := exchange(t, x, "chat", "GET /v1/models?fetch=http%3A%2F%2Fexample.com HTTP/1.1\r\nHost: ignored\r\n\r\n")
 	if query.Load() != "" || len(resp.Trailer) != 0 || bytes.Contains(data, []byte("SENTINEL_SECRET")) {
 		t.Fatalf("query/trailer leaked: %v %v %s", query.Load(), resp.Trailer, data)
 	}
@@ -135,22 +108,21 @@ func TestMalformedAndResponseOverflowAudited(t *testing.T) {
 		io.WriteString(w, "oversize-response")
 	}))
 	defer s.Close()
-	cfg := reviewConfig(s.URL)
-	cfg.AuditLog = filepath.Join(t.TempDir(), "audit.jsonl")
-	cfg.Routes[0].MaxResponseBytes = "4"
+	cfg := chatConfig(t, s.URL)
 	x, err := New(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer x.Close()
+	x.services["chat"].maxResponse = 4
 	a, b := net.Pipe()
 	done := make(chan struct{})
 	go func() { x.ServeStream(context.Background(), a); close(done) }()
 	io.WriteString(b, "{invalid}\n")
 	b.Close()
 	<-done
-	reviewRequest(t, x, "GET /v1/models HTTP/1.1\r\nHost: ignored\r\n\r\n")
-	data, err := os.ReadFile(cfg.AuditLog)
+	exchange(t, x, "chat", "GET /v1/models HTTP/1.1\r\nHost: ignored\r\n\r\n")
+	data, err := os.ReadFile(cfg.AccessLog)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -176,8 +148,7 @@ func TestReopenLogsDoesNotCancelLiveStream(t *testing.T) {
 		io.WriteString(w, "last")
 	}))
 	defer s.Close()
-	cfg := reviewConfig(s.URL)
-	cfg.AuditLog = filepath.Join(t.TempDir(), "audit.jsonl")
+	cfg := chatConfig(t, s.URL)
 	x, err := New(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -189,7 +160,7 @@ func TestReopenLogsDoesNotCancelLiveStream(t *testing.T) {
 	done := make(chan struct{})
 	go func() { x.ServeStream(context.Background(), a); close(done) }()
 	go func() {
-		protocol.WriteStreamHeader(b, protocol.StreamHeader{V: protocol.Version, Service: "chat", Kind: "http"})
+		protocol.WriteStreamHeader(b, protocol.StreamHeader{V: protocol.Version, Service: "chat", Kind: "http", RequestID: "r"})
 		io.WriteString(b, "GET /v1/models HTTP/1.1\r\nHost: ignored\r\n\r\n")
 	}()
 	resp, err := http.ReadResponse(bufio.NewReader(b), nil)
@@ -201,7 +172,7 @@ func TestReopenLogsDoesNotCancelLiveStream(t *testing.T) {
 		t.Fatal(err)
 	}
 	<-started
-	if err = os.Rename(cfg.AuditLog, cfg.AuditLog+".1"); err != nil {
+	if err = os.Rename(cfg.AccessLog, cfg.AccessLog+".1"); err != nil {
 		t.Fatal(err)
 	}
 	if err = x.ReopenLogs(); err != nil {
@@ -214,7 +185,7 @@ func TestReopenLogsDoesNotCancelLiveStream(t *testing.T) {
 	}
 	b.Close()
 	<-done
-	data, err := os.ReadFile(cfg.AuditLog)
+	data, err := os.ReadFile(cfg.AccessLog)
 	if err != nil || !bytes.Contains(data, []byte(`"status":200`)) {
 		t.Fatalf("audit not reopened: %s %v", data, err)
 	}
@@ -222,16 +193,15 @@ func TestReopenLogsDoesNotCancelLiveStream(t *testing.T) {
 func TestAuditCountsCompletedUpload(t *testing.T) {
 	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.Copy(io.Discard, r.Body); io.WriteString(w, "ok") }))
 	defer s.Close()
-	cfg := reviewConfig(s.URL)
-	cfg.AuditLog = filepath.Join(t.TempDir(), "audit.jsonl")
+	cfg := chatConfig(t, s.URL)
 	x, err := New(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer x.Close()
 	body := `{"prompt":"SENTINEL_BODY"}`
-	reviewRequest(t, x, fmt.Sprintf("POST /v1/chat/completions HTTP/1.1\r\nHost: ignored\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s", len(body), body))
-	data, _ := os.ReadFile(cfg.AuditLog)
+	exchange(t, x, "chat", fmt.Sprintf("POST /v1/chat/completions HTTP/1.1\r\nHost: ignored\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s", len(body), body))
+	data, _ := os.ReadFile(cfg.AccessLog)
 	var record map[string]any
 	if err = json.Unmarshal(bytes.TrimSpace(data), &record); err != nil {
 		t.Fatal(err)
@@ -271,12 +241,12 @@ func FuzzHTTPStreamParser(f *testing.F) {
 	for _, seed := range []string{"GET /v1/models HTTP/1.1\r\nHost: ignored\r\n\r\n", "POST /v1/../admin HTTP/1.1\r\nHost: ignored\r\n\r\n", "POST /v1/chat/completions HTTP/1.1\r\nHost: ignored\r\nContent-Length: 4\r\nTransfer-Encoding: chunked\r\nContent-Type: application/json\r\n\r\n0\r\n\r\n"} {
 		f.Add([]byte(seed))
 	}
-	x, err := New(reviewConfig("http://127.0.0.1:1"))
+	x, err := New(chatConfig(f, "http://127.0.0.1:1"))
 	if err != nil {
 		f.Fatal(err)
 	}
 	defer x.Close()
-	x.routes["chat"].upstreams[0].client.Transport = parserTransport{}
+	x.services["chat"].upstreams[0].client.Transport = parserTransport{}
 	f.Fuzz(func(t *testing.T, data []byte) {
 		if len(data) > 65536 {
 			t.Skip()
@@ -295,14 +265,14 @@ func TestResponseHeadersResetIdleTimer(t *testing.T) {
 		io.WriteString(w, "done")
 	}))
 	defer s.Close()
-	cfg := reviewConfig(s.URL)
-	cfg.Routes[0].IdleTimeout = "300ms"
+	cfg := chatConfig(t, s.URL)
+	cfg.Services[0].IdleTimeout = 300 * time.Millisecond
 	x, err := New(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer x.Close()
-	resp, data := reviewRequest(t, x, "GET /v1/models HTTP/1.1\r\nHost: ignored\r\n\r\n")
+	resp, data := exchange(t, x, "chat", "GET /v1/models HTTP/1.1\r\nHost: ignored\r\n\r\n")
 	if resp.StatusCode != 200 || string(data) != "done" {
 		t.Fatalf("headers did not reset idle timer: %d %q", resp.StatusCode, data)
 	}

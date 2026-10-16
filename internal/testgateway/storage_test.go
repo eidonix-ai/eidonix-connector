@@ -7,9 +7,6 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/hex"
-	"github.com/eidonix-ai/eidonix-connector/protocol"
-	"github.com/gorilla/websocket"
-	"github.com/hashicorp/yamux"
 	"io"
 	"net"
 	"net/http"
@@ -17,6 +14,10 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/eidonix-ai/eidonix-connector/protocol"
+	"github.com/gorilla/websocket"
+	"github.com/hashicorp/yamux"
 )
 
 func TestStorageCapabilityNegotiation(t *testing.T) {

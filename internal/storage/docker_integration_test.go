@@ -29,15 +29,15 @@ import (
 	"github.com/minio/minio-go/v7/pkg/credentials"
 )
 
-func dockerFixture(t *testing.T) (*Handler, *minio.Client, config.Route, []byte) {
+func dockerFixture(t *testing.T) (*Handler, *minio.Client, config.Storage, []byte) {
 	t.Helper()
 	endpoint := os.Getenv("CONNECTOR_TEST_S3_ENDPOINT")
 	if endpoint == "" {
 		t.Skip("run ci/storage-minio.sh for TLS MinIO tests")
 	}
-	ca, e := os.ReadFile(os.Getenv("CONNECTOR_TEST_S3_CA"))
-	if e != nil {
-		t.Fatal(e)
+	ca, err := os.ReadFile(os.Getenv("CONNECTOR_TEST_S3_CA"))
+	if err != nil {
+		t.Fatal(err)
 	}
 	roots := x509.NewCertPool()
 	if !roots.AppendCertsFromPEM(ca) {
@@ -60,8 +60,10 @@ func dockerFixture(t *testing.T) (*Handler, *minio.Client, config.Route, []byte)
 	}
 	key := make([]byte, 32)
 	rand.Read(key)
-	cfg := config.Route{ID: "files", Type: "object_storage", Endpoint: endpoint, Region: "us-east-1", Bucket: bucket, Prefix: "objects/", PathStyle: true, TLSCAFile: os.Getenv("CONNECTOR_TEST_S3_CA"), Encryption: config.Encryption{Mode: "sse-c"}, MaxObjectBytes: "5GiB", PartSize: "5MiB", MaxConcurrency: 4, MaxOpsPerSecond: 10000, IdleTimeout: "10s", MaxUploadLifetime: "6h", AbandonedUploadAge: "24h"}
-	h, e := newHandler(ctx, cfg, os.Getenv("CONNECTOR_TEST_S3_ACCESS"), os.Getenv("CONNECTOR_TEST_S3_SECRET"), key, nil)
+	cfg := config.StorageDefaults()
+	cfg.Endpoint, cfg.Bucket, cfg.Prefix, cfg.PathStyle, cfg.CACertificate = endpoint, bucket, "objects/", true, string(ca)
+	cfg.PartSize, cfg.MaxOpsPerSecond, cfg.IdleTimeout = 5<<20, 10000, 10*time.Second
+	h, e := newHandler(ctx, "files", 4, cfg, os.Getenv("CONNECTOR_TEST_S3_ACCESS"), os.Getenv("CONNECTOR_TEST_S3_SECRET"), key, nil)
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -378,7 +380,7 @@ func TestDockerReplacementPaginationAndBudget(t *testing.T) {
 		t.Fatalf("pagination lost objects: %v", seen)
 	}
 	h.mu.Lock()
-	h.cfg.MaxReadBytesPerHour = 8
+	h.cfg.MaxReadPerHour = 8
 	h.reads = 0
 	h.mu.Unlock()
 	result, body := storageExchange(t, h, protocol.StreamHeader{Op: "get", Key: b64("a")}, nil)

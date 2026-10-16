@@ -7,23 +7,23 @@ import (
 )
 
 func TestPinnedDestinations(t *testing.T) {
-	p, e := New(context.Background(), []string{"http://127.0.0.1:9000"}, []string{"127.0.0.0/8"})
+	p, e := New(context.Background(), []string{"http://127.0.0.1:9000"})
 	if e != nil {
 		t.Fatal(e)
 	}
-	for _, addr := range []string{"127.0.0.1:9001", "169.254.169.254:80", "localhost:9000"} {
+	for _, addr := range []string{"127.0.0.1:9001", "169.254.169.254:80", "localhost:9000", "127.0.0.1:443", "[::1]:9000"} {
 		if _, e = p.DialContext(context.Background(), "tcp", addr); e == nil {
 			t.Fatalf("dial allowed %s", addr)
 		}
 	}
-	if _, e = New(context.Background(), []string{"http://127.0.0.1:9000"}, []string{"192.0.2.0/24"}); e == nil {
-		t.Fatal("CIDR restriction bypassed")
+	if got := p.Addresses(); len(got) != 1 || got[0] != "127.0.0.1" {
+		t.Fatal(got)
 	}
 }
 
 func TestDNSRebindingCannotExpandPins(t *testing.T) {
 	ctx := context.Background()
-	p, e := New(ctx, []string{"http://127.0.0.1:9000"}, nil)
+	p, e := New(ctx, []string{"http://127.0.0.1:9000"})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -47,7 +47,7 @@ func TestDNSRebindingCannotExpandPins(t *testing.T) {
 	}
 }
 func TestIPv6ZoneRejected(t *testing.T) {
-	if _, e := New(context.Background(), []string{"http://[fe80::1%25eth0]:80"}, nil); e == nil {
+	if _, e := New(context.Background(), []string{"http://[fe80::1%25eth0]:80"}); e == nil {
 		t.Fatal("IPv6 zone accepted")
 	}
 }

@@ -1,32 +1,26 @@
+// eidonix-connector shares the services one configuration file names with
+// Eidonix, over one outbound connection.
 package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"log"
-	"net/url"
 	"os"
 	"os/signal"
 	"syscall"
 
 	"github.com/eidonix-ai/eidonix-connector/internal/config"
 	"github.com/eidonix-ai/eidonix-connector/internal/connector"
-	"github.com/eidonix-ai/eidonix-connector/internal/network"
 	"github.com/eidonix-ai/eidonix-connector/internal/session"
-	"github.com/eidonix-ai/eidonix-connector/internal/storage"
-	"time"
 )
 
 var version = "0.2.0"
 
-type upstreamFlags []string
-
-func (u *upstreamFlags) String() string     { return fmt.Sprint([]string(*u)) }
-func (u *upstreamFlags) Set(v string) error { *u = append(*u, v); return nil }
+const usage = "usage: eidonix-connector run|check|version [--config PATH]"
 
 func main() {
 	if err := execute(os.Args[1:], os.Stdout, os.Stderr, os.Geteuid()); err != nil {
@@ -36,111 +30,40 @@ func main() {
 }
 func execute(args []string, out, errOut io.Writer, uid int) error {
 	if len(args) == 0 {
-		return errors.New("usage: eidonix-connector run|check-config|print-systemd-network|init|version")
+		return errors.New(usage)
 	}
 	command := args[0]
 	fs := flag.NewFlagSet(command, flag.ContinueOnError)
 	fs.SetOutput(errOut)
-	path := fs.String("config", config.DefaultPath, "local TOML config file")
-	writeProbe := fs.Bool("write-probe", false, "perform a temporary storage write/read/delete probe (check-config only)")
-	allowRoot := fs.Bool("allow-root", false, "allow root for diagnostics only")
-	profile := fs.String("profile", "vllm", "starter server profile")
-	var upstream upstreamFlags
-	fs.Var(&upstream, "upstream", "starter upstream origin (repeatable)")
+	path := fs.String("config", config.DefaultPath, "configuration file")
+	allowRoot := fs.Bool("allow-root", false, "allow running as root (diagnostics only)")
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
 	if fs.NArg() != 0 {
-		return errors.New("unexpected arguments")
-	}
-	if *writeProbe && command != "check-config" {
-		return errors.New("--write-probe requires check-config")
+		return errors.New("unexpected arguments; " + usage)
 	}
 	switch command {
 	case "version":
 		fmt.Fprintln(out, version)
 		return nil
-	case "init":
-		return starter(out, *profile, upstream)
-	case "run", "check-config", "print-systemd-network":
-	default:
-		return fmt.Errorf("unknown command %q", command)
-	}
-	if command == "run" && uid == 0 && !*allowRoot {
-		return errors.New("refusing to run as root; use the service account (diagnostics: --allow-root)")
-	}
-	cfg, err := config.Load(*path)
-	if err != nil {
-		return err
-	}
-	switch command {
-	case "check-config":
-		for _, r := range cfg.Routes {
-			if r.Type == "object_storage" {
-				if err := checkStorage(r, cfg.AuditLog, *writeProbe, out); err != nil {
-					return err
-				}
-				continue
-			}
-			// Print only policy fields: locally injected header values may contain secrets.
-			policy := struct {
-				ID          string            `json:"id"`
-				Type        string            `json:"type"`
-				Flavor      string            `json:"flavor"`
-				Upstreams   []string          `json:"upstreams"`
-				Methods     [][2]string       `json:"methods_paths"`
-				Websocket   []string          `json:"websocket_paths"`
-				Concurrency int               `json:"max_concurrency"`
-				Request     string            `json:"max_request_bytes"`
-				Response    string            `json:"max_response_bytes"`
-				Idle        string            `json:"idle_timeout"`
-				Models      map[string]string `json:"models,omitempty"`
-			}{r.ID, r.Type, r.Flavor, r.Upstreams, r.MethodsPaths, r.WebsocketPaths, r.MaxConcurrency, r.MaxRequestBytes, r.MaxResponseBytes, r.IdleTimeout, r.Models}
-			if err := json.NewEncoder(out).Encode(policy); err != nil {
-				return err
-			}
+	case "run":
+		if uid == 0 && !*allowRoot {
+			return errors.New("refusing to run as root; use the eidonix-connector service account (diagnostics: --allow-root)")
 		}
-		return nil
-	case "print-systemd-network":
-		s, err := network.Systemd(context.Background(), cfg)
+		cfg, err := config.Load(*path)
 		if err != nil {
 			return err
 		}
-		_, err = fmt.Fprint(out, s)
-		return err
-	default:
 		return run(*path, cfg, errOut)
+	case "check":
+		if _, err := config.Load(*path); err != nil {
+			return err
+		}
+		fmt.Fprintln(out, "configuration ok")
+		return nil
 	}
-}
-func starter(out io.Writer, profile string, upstream []string) error {
-	types := map[string]string{"vllm": "openai_chat", "sglang": "openai_chat", "ollama": "openai_chat", "llamacpp": "openai_chat", "go-llm-proxy": "openai_chat", "litellm": "openai_chat", "tei": "openai_embeddings", "infinity": "openai_embeddings", "gotenberg": "document_conversion", "tika": "document_conversion"}
-	flavor := profile
-	if profile == "generic" {
-		flavor = ""
-		types[profile] = "openai_chat"
-	}
-	typ, ok := types[profile]
-	if !ok {
-		return fmt.Errorf("unknown starter profile %q", profile)
-	}
-	if len(upstream) == 0 {
-		return errors.New("init requires --upstream")
-	}
-	cfg := config.Config{Server: "https://gateway.example.com", TokenFile: "/etc/eidonix-connector/token", ServerKeys: map[string]string{"operator-key-id": "REPLACE_WITH_VERIFIED_BASE64_ED25519_PUBLIC_KEY"}, TLS: config.TLS{CA: "system"}, AuditLog: "/var/log/eidonix-connector/audit.jsonl", Routes: []config.Route{{ID: "inference", Type: typ, Flavor: flavor, Upstreams: upstream}}}
-	if profile == "generic" {
-		cfg.Routes[0].ID = "chat"
-	}
-	// Validate the origin and flavor using a temporary syntactically valid key.
-	validation := cfg
-	validation.ServerKeys = map[string]string{"validation-only": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="}
-	if err := validation.Validate(); err != nil {
-		return err
-	}
-	fmt.Fprintln(out, "# Eidonix connector configuration (TOML). Replace the placeholder with the server")
-	fmt.Fprintln(out, "# operator's independently verified Ed25519 key. Add each additional service as its")
-	fmt.Fprintln(out, "# own [[routes]] entry with its locally reviewed profile and upstream origin; map")
-	fmt.Fprintln(out, "# gateway model names to upstream ids under [routes.models] where needed.")
-	return config.Encode(out, &cfg)
+	return fmt.Errorf("unknown command %q; %s", command, usage)
 }
 
 type runningContext struct {
@@ -153,6 +76,8 @@ func newRunningContext() *runningContext {
 	return &runningContext{ctx, cancel}
 }
 
+// run serves until SIGINT/SIGTERM. SIGHUP reloads the file (a rejected reload
+// keeps the running configuration); SIGUSR1 reopens the access log.
 func run(path string, cfg *config.Config, errOut io.Writer) error {
 	logger := log.New(errOut, "", log.LstdFlags)
 	if err := session.ValidateConfig(context.Background(), cfg); err != nil {
@@ -180,7 +105,7 @@ func run(path string, cfg *config.Config, errOut io.Writer) error {
 		case sig := <-signals:
 			if sig == syscall.SIGUSR1 {
 				if err := handler.ReopenLogs(); err != nil {
-					logger.Printf("audit log reopen failed: %v", err)
+					logger.Printf("access log reopen failed: %v", err)
 				}
 				continue
 			}
@@ -190,17 +115,15 @@ func run(path string, cfg *config.Config, errOut io.Writer) error {
 				return nil
 			}
 			replacement, err := config.Load(path)
-			if err != nil {
-				logger.Printf("reload rejected: %v", err)
-				continue
+			if err == nil {
+				err = session.ValidateConfig(context.Background(), replacement)
 			}
-			if err := session.ValidateConfig(context.Background(), replacement); err != nil {
-				logger.Printf("reload rejected: %v", err)
-				continue
+			var next *connector.Connector
+			if err == nil {
+				next, err = connector.New(replacement)
 			}
-			next, err := connector.NewReplacement(replacement, handler)
 			if err != nil {
-				logger.Printf("reload rejected: %v", err)
+				logger.Printf("reload rejected, keeping the running configuration: %v", err)
 				continue
 			}
 			active.cancel()
@@ -209,37 +132,7 @@ func run(path string, cfg *config.Config, errOut io.Writer) error {
 			cfg, handler = replacement, next
 			active = newRunningContext()
 			start()
-			logger.Print("local configuration reloaded; audit log reopened; active streams ended")
+			logger.Print("configuration reloaded; access log reopened; active streams ended")
 		}
 	}
-}
-
-func checkStorage(route config.Route, auditPath string, writeProbe bool, out io.Writer) error {
-	var audit *os.File
-	if auditPath != "" {
-		var err error
-		audit, err = os.OpenFile(auditPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
-		if err != nil {
-			return err
-		}
-		defer audit.Close()
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
-	h, err := storage.New(ctx, route, func(entry storage.AuditEntry) {
-		if audit != nil {
-			json.NewEncoder(audit).Encode(entry)
-		}
-	})
-	if err != nil {
-		return err
-	}
-	defer h.Close()
-	checks, checkErr := h.Check(ctx, writeProbe)
-	endpoint, _ := url.Parse(route.Endpoint)
-	scheme := endpoint.Scheme
-	if err = json.NewEncoder(out).Encode(map[string]any{"id": route.ID, "type": route.Type, "bucket": route.Bucket, "prefix": route.Prefix, "encryption": route.Encryption.Mode, "endpoint_scheme": scheme, "checks": checks, "lifecycle_reminder": "configure a prefix-scoped AbortIncompleteMultipartUpload rule using operator tools"}); err != nil {
-		return err
-	}
-	return checkErr
 }
