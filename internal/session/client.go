@@ -1,4 +1,4 @@
-// Package session maintains the authenticated outbound cloud session.
+// Package session maintains the authenticated outbound upstream session.
 package session
 
 import (
@@ -71,7 +71,7 @@ func RunOptions(ctx context.Context, o Options, h Handler) error {
 		if ctx.Err() != nil {
 			break
 		}
-		slog.Warn("cloud session ended", "error", e)
+		slog.Warn("upstream session ended", "error", e)
 		if time.Since(started) > time.Minute {
 			delay = time.Second
 		}
@@ -112,11 +112,11 @@ func connect(ctx context.Context, endpoint, instance string, o Options, h Handle
 		if response != nil && response.Body != nil {
 			response.Body.Close()
 		}
-		return fmt.Errorf("cloud upgrade: %w", e)
+		return fmt.Errorf("upstream upgrade: %w", e)
 	}
 	defer ws.Close()
 	if ws.Subprotocol() != protocol.Subprotocol {
-		return errors.New("incorrect cloud subprotocol")
+		return errors.New("upstream did not accept the eidonix-connector.v2 subprotocol")
 	}
 	if e = protocol.VerifyIdentity(response.Header, nonce, instance, o.Keys, time.Now()); e != nil {
 		return fmt.Errorf("upstream identity: %w", e)

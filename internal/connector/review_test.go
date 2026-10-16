@@ -233,8 +233,10 @@ func (c *parserConn) SetWriteDeadline(time.Time) error { return nil }
 type parserTransport struct{}
 
 func (parserTransport) RoundTrip(r *http.Request) (*http.Response, error) {
-	io.Copy(io.Discard, r.Body)
-	r.Body.Close()
+	if r.Body != nil { // health probes have no body
+		io.Copy(io.Discard, r.Body)
+		r.Body.Close()
+	}
 	return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("ok"))}, nil
 }
 func FuzzHTTPStreamParser(f *testing.F) {
