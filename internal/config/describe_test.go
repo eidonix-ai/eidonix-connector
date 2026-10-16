@@ -112,6 +112,10 @@ storage:
 			t.Fatalf("missing %q:\n%s", want, out)
 		}
 	}
+	proxied, _ := Redact([]byte("upstream:\n  proxy_url: http://user:PROXY-SECRET@proxy.example.com:3128\n"))
+	if strings.Contains(string(proxied), "PROXY-SECRET") {
+		t.Fatal(string(proxied))
+	}
 	// The public key is public; only secret settings are replaced.
 	if strings.Count(string(out), Redacted) != 5 {
 		t.Fatalf("%d redactions:\n%s", strings.Count(string(out), Redacted), out)

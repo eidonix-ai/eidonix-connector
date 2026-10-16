@@ -185,7 +185,9 @@ func redactNode(n *yaml.Node) {
 	if n.Kind == yaml.MappingNode {
 		for i := 0; i+1 < len(n.Content); i += 2 {
 			k, v := n.Content[i], n.Content[i+1]
-			if SecretFields[k.Value] && v.Kind == yaml.ScalarNode && v.Value != "" {
+			// A proxy URL with a password is secret too.
+			proxyCredentials := k.Value == "proxy_url" && strings.Contains(v.Value, "@")
+			if (SecretFields[k.Value] || proxyCredentials) && v.Kind == yaml.ScalarNode && v.Value != "" {
 				v.Value, v.Tag, v.Style = Redacted, "!!str", 0
 				continue
 			}

@@ -460,6 +460,7 @@ func (x *Connector) ServeStream(parent context.Context, raw net.Conn) {
 			storageHandler.Serve(ctx, raw, br, h)
 			return
 		}
+		entry.Status = protocol.HTTPStatus(entry.Error)
 		protocol.WriteStorageResult(raw, protocol.StorageErrorResult(entry.Error), h.Op)
 		return
 	}
