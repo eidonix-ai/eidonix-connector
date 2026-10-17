@@ -20,8 +20,9 @@ func (c *Config) Describe() string {
 		keys = fmt.Sprintf("%d public keys", len(c.Upstream.PublicKeys))
 	}
 	host := upstreamHost(c.Upstream.URL)
-	if c.Upstream.ProxyURL != "" {
-		fmt.Fprintf(&b, "Connects to upstream %s through the web proxy %s (%s).\n", host, HostPort(c.Upstream.ProxyURL), keys)
+	fmt.Fprintf(&b, "Site %s (must match the connector's name in Eidonix Setup).\n", c.Site)
+	if c.Upstream.Proxy != "" {
+		fmt.Fprintf(&b, "Connects to upstream %s through the web proxy %s (%s).\n", host, HostPort(c.Upstream.Proxy), keys)
 	} else {
 		fmt.Fprintf(&b, "Connects to upstream %s (%s).\n", host, keys)
 	}
@@ -39,23 +40,10 @@ func (c *Config) Describe() string {
 	var table bytes.Buffer
 	w := tabwriter.NewWriter(&table, 0, 0, 2, ' ', 0)
 	for _, s := range c.Services {
-		fmt.Fprintf(w, "  %s\t%s\t%s\t%s\n", s.Type, s.Name, strings.Join(s.Hosts(), ", "), s.details())
+		fmt.Fprintf(w, "  %s\t%s\t%s\t%s\n", s.Name, s.Kind, s.Host(), s.details())
 	}
 	w.Flush()
 	b.Write(table.Bytes())
-	used := map[string]bool{}
-	for _, s := range c.Services {
-		used[s.Type] = true
-	}
-	unused := []string{}
-	for _, t := range protocol.ServiceTypes {
-		if !used[t] {
-			unused = append(unused, t)
-		}
-	}
-	if len(unused) > 0 {
-		fmt.Fprintf(&b, "Not shared: %s.\n", strings.Join(unused, ", "))
-	}
 	fmt.Fprintf(&b, "Logs every request to %s (never contents).\n", c.AccessLog)
 	if c.File.Path != "" {
 		fmt.Fprintf(&b, "File permissions: ok (%04o %s:%s). ", uint32(c.File.Mode), c.File.Owner, c.File.Group)
@@ -79,51 +67,53 @@ func upstreamHost(raw string) string {
 	return u.Host
 }
 
-// Hosts lists the host:port pairs the service may reach.
-func (s Service) Hosts() []string {
-	if s.Storage != nil {
-		return []string{HostPort(s.Storage.Endpoint)}
+// Host is the host:port the service may reach, with https:// when it uses TLS.
+func (s Service) Host() string {
+	if strings.HasPrefix(s.URL, "https://") {
+		return "https://" + HostPort(s.URL)
 	}
-	out := []string{}
-	for _, u := range s.URLs {
-		out = append(out, HostPort(u))
-	}
-	return out
+	return HostPort(s.URL)
 }
 
 func (s Service) details() string {
 	parts := []string{}
 	if st := s.Storage; st != nil {
-		parts = append(parts, fmt.Sprintf("bucket %s, folder %s; %s", st.Bucket, st.Prefix, encryptionSentence(st.Encryption)))
-		if st.MaxReadPerHour > 0 {
-			parts = append(parts, "max read per hour: "+FormatSize(st.MaxReadPerHour))
+		parts = append(parts, fmt.Sprintf("bucket %s; %s", st.Bucket, encryptionSentence(st.Encryption)))
+		if st.ReadOnly {
+			parts = append(parts, "read-only")
 		}
-	}
-	if s.Contract().Models {
-		parts = append(parts, "models: "+s.Models.describe())
-	}
-	if s.Type == protocol.TypeCustom {
+		if st.MaxFileSize != protocol.MaxStorageObjectBytes {
+			parts = append(parts, "max file size: "+FormatSize(st.MaxFileSize))
+		}
+	} else {
 		reqs := []string{}
-		for _, r := range s.Paths {
-			reqs = append(reqs, r.String())
+		for _, e := range s.Endpoints {
+			reqs = append(reqs, e.String())
 		}
-		parts = append(parts, "requests: "+strings.Join(reqs, ", "))
-	}
-	if s.APIPath != "" {
-		parts = append(parts, "api path: "+s.APIPath)
+		parts = append(parts, strings.Join(reqs, ", "))
+		if s.Models.Set() {
+			parts = append(parts, "models: "+s.Models.describe())
+		} else {
+			parts = append(parts, "models: not checked")
+		}
+		if s.Health != "" {
+			parts = append(parts, "health: GET "+s.Health)
+		} else {
+			parts = append(parts, "health: reachability")
+		}
 	}
 	parts = append(parts, fmt.Sprintf("max concurrent: %d", s.MaxConcurrentRequests))
 	if s.MaxRequestsPerMinute > 0 {
 		parts = append(parts, fmt.Sprintf("max per minute: %d", s.MaxRequestsPerMinute))
 	}
-	if s.Type != protocol.TypeStorage && s.IdleTimeout != s.Contract().Idle {
-		parts = append(parts, "idle timeout: "+shortDuration(s.IdleTimeout))
+	if s.Kind == KindHTTP && s.IdleTimeout != DefaultIdleTimeout {
+		parts = append(parts, "idle timeout: "+ShortDuration(s.IdleTimeout))
 	}
 	return strings.Join(parts, "   ")
 }
 
-// shortDuration renders 5m0s as 5m and 1h0m0s as 1h.
-func shortDuration(d time.Duration) string {
+// ShortDuration renders 5m0s as 5m and 1h0m0s as 1h.
+func ShortDuration(d time.Duration) string {
 	s := d.String()
 	if strings.HasSuffix(s, "m0s") {
 		s = strings.TrimSuffix(s, "0s")
@@ -135,9 +125,6 @@ func shortDuration(d time.Duration) string {
 }
 
 func (m Models) describe() string {
-	if m.Any {
-		return "any (whatever the server offers)"
-	}
 	out := []string{}
 	for _, n := range m.Names {
 		if t := m.Target[n]; t != n {
@@ -155,8 +142,6 @@ func encryptionSentence(mode string) string {
 		return "files are encrypted with a key kept only on this machine (sse-c)"
 	case "sse-s3":
 		return "files are encrypted by the storage (sse-s3)"
-	case "sse-kms":
-		return "files are encrypted by the storage with a KMS key (sse-kms)"
 	}
 	return "files are stored without encryption"
 }
@@ -186,7 +171,7 @@ func redactNode(n *yaml.Node) {
 		for i := 0; i+1 < len(n.Content); i += 2 {
 			k, v := n.Content[i], n.Content[i+1]
 			// A proxy URL with a password is secret too.
-			proxyCredentials := k.Value == "proxy_url" && strings.Contains(v.Value, "@")
+			proxyCredentials := k.Value == "proxy" && strings.Contains(v.Value, "@")
 			if (SecretFields[k.Value] || proxyCredentials) && v.Kind == yaml.ScalarNode && v.Value != "" {
 				v.Value, v.Tag, v.Style = Redacted, "!!str", 0
 				continue

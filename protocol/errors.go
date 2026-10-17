@@ -36,7 +36,7 @@ var errorCodes = map[string]errorCode{
 	"backend_unavailable": {"storage is unavailable", 502},
 	"backend_invalid":     {"invalid storage response", 502},
 	"timeout":             {"storage operation timed out", 504},
-	"wrong_route_type":    {"wrong service type", 502},
+	"wrong_route_type":    {"wrong service kind", 502},
 	"unsupported_kind":    {"unsupported stream kind", 502},
 	"internal":            {"internal connector error", 500},
 }

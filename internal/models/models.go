@@ -295,22 +295,3 @@ func copyPart(w io.Writer, part *multipart.Part) (int64, error) {
 		}
 	}
 }
-
-// ModelList renders the allowlist as an OpenAI-style model list.
-func (p *Policy) ModelList() []byte {
-	type model struct {
-		ID      string `json:"id"`
-		Object  string `json:"object"`
-		Created int64  `json:"created"`
-		OwnedBy string `json:"owned_by"`
-	}
-	data := make([]model, 0, len(p.names))
-	for _, n := range p.names {
-		data = append(data, model{n, "model", 0, "eidonix-connector"})
-	}
-	b, _ := json.Marshal(struct {
-		Object string  `json:"object"`
-		Data   []model `json:"data"`
-	}{"list", data})
-	return b
-}

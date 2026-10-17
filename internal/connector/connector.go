@@ -1,7 +1,7 @@
 // Package connector serves gateway streams against the locally configured
-// services. Each service type accepts exactly its fixed list of requests;
-// every outbound connection goes through a dialer pinned to the hosts the
-// configuration names.
+// services. Each http service accepts exactly the requests its
+// allowed-endpoints lists; every outbound connection goes through a dialer
+// pinned to the address the configuration names.
 package connector
 
 import (
@@ -27,35 +27,37 @@ import (
 	"github.com/eidonix-ai/eidonix-connector/internal/config"
 	"github.com/eidonix-ai/eidonix-connector/internal/models"
 	"github.com/eidonix-ai/eidonix-connector/internal/network"
-	"github.com/eidonix-ai/eidonix-connector/internal/servicetype"
 	"github.com/eidonix-ai/eidonix-connector/internal/storage"
 	"github.com/eidonix-ai/eidonix-connector/protocol"
 	"github.com/gorilla/websocket"
 )
 
-type upstream struct {
-	base   *url.URL
-	client *http.Client
-	policy *network.Policy
-	flight int
-	eject  time.Time
-}
+// Internal limits shared by every http service.
+const (
+	MaxRequestBytes          int64 = 100 << 20
+	MaxResponseBytes         int64 = 256 << 20
+	MaxWebSocketMessageBytes       = 4 << 20
+	HealthInterval                 = 15 * time.Second
+	EjectFor                       = 30 * time.Second
+)
+
 type service struct {
-	cfg       config.Service
-	typ       servicetype.Type
-	storage   *storage.Handler
-	upstreams []*upstream
-	flight    int
-	tokens    float64
-	last      time.Time
-	models    []string       // advertised names
-	allow     *models.Policy // nil for models: any and types without models
-	// Size limits are internal defaults by type.
+	cfg     config.Service
+	storage *storage.Handler
+	base    *url.URL
+	client  *http.Client
+	policy  *network.Policy
+	flight  int
+	tokens  float64
+	last    time.Time
+	eject   time.Time      // unhealthy until
+	allow   *models.Policy // nil when the service does not check models
+	// Size limits (MaxRequestBytes, MaxResponseBytes; tests lower them).
 	maxRequest, maxResponse int64
 }
 
-// healthInterval is servicetype.HealthInterval; tests shorten it.
-var healthInterval = servicetype.HealthInterval
+// healthInterval is HealthInterval; tests shorten it.
+var healthInterval = HealthInterval
 
 type Connector struct {
 	mu          sync.Mutex
@@ -81,33 +83,28 @@ func New(c *config.Config) (*Connector, error) {
 		x.audit = f
 	}
 	for _, cfg := range c.Services {
-		s := &service{cfg: cfg, typ: cfg.Contract(), last: time.Now(), tokens: math.Max(1, float64(cfg.MaxRequestsPerMinute)), maxResponse: servicetype.MaxResponseBytes}
-		s.maxRequest = s.typ.MaxRequestBytes
-		if cfg.Models.Allowlist() {
+		s := &service{cfg: cfg, last: time.Now(), tokens: math.Max(1, float64(cfg.MaxRequestsPerMinute)), maxRequest: MaxRequestBytes, maxResponse: MaxResponseBytes}
+		if cfg.Models.Set() {
 			s.allow = models.New(cfg.Models.Names, cfg.Models.Target)
-			s.models = s.allow.Names()
 		}
 		x.services[cfg.Name] = s
 		x.order = append(x.order, cfg.Name)
-		if cfg.Type == protocol.TypeStorage {
+		if cfg.Kind == config.KindS3 {
 			x.storageInit.Add(1)
 			go func() { defer x.storageInit.Done(); x.startStorage(ctx, s) }()
 			continue
 		}
-		for _, raw := range cfg.URLs {
-			p, e := network.New(ctx, []string{raw})
-			if e != nil {
-				x.Close()
-				return nil, fmt.Errorf("%s service %q: %w", cfg.Type, cfg.Name, e)
-			}
-			u, _ := url.Parse(raw)
-			t := &http.Transport{Proxy: nil, DialContext: p.DialContext, DisableCompression: true, MaxResponseHeaderBytes: 64 << 10, ResponseHeaderTimeout: max(120*time.Second, cfg.IdleTimeout)}
-			s.upstreams = append(s.upstreams, &upstream{base: u, policy: p, client: &http.Client{Transport: t, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}})
+		p, e := network.New(ctx, []string{cfg.URL})
+		if e != nil {
+			x.Close()
+			return nil, fmt.Errorf("service %q: %w", cfg.Name, e)
 		}
+		s.base, _ = url.Parse(cfg.URL)
+		s.policy = p
+		t := &http.Transport{Proxy: nil, DialContext: p.DialContext, DisableCompression: true, MaxResponseHeaderBytes: 64 << 10, ResponseHeaderTimeout: max(120*time.Second, cfg.IdleTimeout)}
+		s.client = &http.Client{Transport: t, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 		go x.health(ctx, s, healthInterval)
-		for _, u := range s.upstreams {
-			go x.refreshDNS(ctx, u)
-		}
+		go x.refreshDNS(ctx, s)
 	}
 	return x, nil
 }
@@ -119,8 +116,8 @@ func (x *Connector) Close() error {
 		if s.storage != nil {
 			s.storage.Close()
 		}
-		for _, u := range s.upstreams {
-			u.client.CloseIdleConnections()
+		if s.client != nil {
+			s.client.CloseIdleConnections()
 		}
 	}
 	x.mu.Unlock()
@@ -132,15 +129,10 @@ func (x *Connector) Close() error {
 	return nil
 }
 func (x *Connector) healthy(s *service) bool {
-	if s.cfg.Type == protocol.TypeStorage {
+	if s.cfg.Kind == config.KindS3 {
 		return s.storage != nil && s.storage.Healthy()
 	}
-	for _, u := range s.upstreams {
-		if time.Now().After(u.eject) {
-			return true
-		}
-	}
-	return false
+	return !time.Now().Before(s.eject)
 }
 
 // HelloServices advertises every configured service.
@@ -150,16 +142,19 @@ func (x *Connector) HelloServices() []protocol.Service {
 	out := []protocol.Service{}
 	for _, name := range x.order {
 		s := x.services[name]
-		a := protocol.Service{Name: name, Type: s.cfg.Type, Models: append([]string{}, s.models...), ModelsAny: s.cfg.Models.Any, MaxConcurrentRequests: s.cfg.MaxConcurrentRequests, Healthy: x.healthy(s)}
+		a := protocol.Service{Name: name, Kind: s.cfg.Kind, Models: append([]string{}, s.cfg.Models.Names...), MaxConcurrentRequests: s.cfg.MaxConcurrentRequests, Healthy: x.healthy(s)}
+		for _, e := range s.cfg.Endpoints {
+			a.Endpoints = append(a.Endpoints, e.String())
+		}
 		if st := s.cfg.Storage; st != nil {
-			a.Storage = &protocol.StorageService{MaxKeyBytes: st.MaxKeyBytes(), MaxObjectBytes: st.MaxFileSize, Encryption: st.Encryption}
+			a.Storage = &protocol.StorageService{MaxKeyBytes: st.MaxKeyBytes(), MaxObjectBytes: st.MaxFileSize, Encryption: st.Encryption, ReadOnly: st.ReadOnly}
 		}
 		out = append(out, a)
 	}
 	return out
 }
 
-// StatusServices reports health, in-flight requests and the current model list.
+// StatusServices reports health, in-flight requests and the model list.
 func (x *Connector) StatusServices() []protocol.ServiceStatus {
 	x.mu.Lock()
 	defer x.mu.Unlock()
@@ -170,14 +165,43 @@ func (x *Connector) StatusServices() []protocol.ServiceStatus {
 		if s.storage != nil {
 			flight = s.storage.InFlight()
 		}
-		out = append(out, protocol.ServiceStatus{Name: name, Healthy: x.healthy(s), Models: append([]string{}, s.models...), InFlight: flight})
+		out = append(out, protocol.ServiceStatus{Name: name, Healthy: x.healthy(s), Models: append([]string{}, s.cfg.Models.Names...), InFlight: flight})
 	}
 	return out
 }
 
-// health probes GET <url>/health on every upstream: any response below 500
-// counts as healthy; dial errors, timeouts and 5xx eject the address for 30s.
-// Services with models: any also refresh their model list.
+// probe checks a service once: GET <health> when the service names a health
+// path (any response below 500 counts as healthy), otherwise a TCP connection
+// to its address. The pinned addresses are re-resolved first.
+func (x *Connector) probe(ctx context.Context, s *service) error {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if err := s.policy.Refresh(ctx); err != nil {
+		return err
+	}
+	if s.cfg.Health == "" {
+		c, err := s.policy.DialContext(ctx, "tcp", config.HostPort(s.cfg.URL))
+		if err == nil {
+			c.Close()
+		}
+		return err
+	}
+	req, _ := http.NewRequestWithContext(ctx, "GET", s.base.String()+s.cfg.Health, nil)
+	x.authorize(req.Header, s)
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return err
+	}
+	io.Copy(io.Discard, io.LimitReader(resp.Body, 65536))
+	resp.Body.Close()
+	if resp.StatusCode >= 500 {
+		return fmt.Errorf("health status %d", resp.StatusCode)
+	}
+	return nil
+}
+
+// health probes the service every interval; a failed probe marks it
+// unhealthy (requests answer upstream_unavailable) until a probe succeeds.
 func (x *Connector) health(ctx context.Context, s *service, interval time.Duration) {
 	tick := time.NewTicker(interval)
 	defer tick.Stop()
@@ -186,85 +210,46 @@ func (x *Connector) health(ctx context.Context, s *service, interval time.Durati
 		case <-ctx.Done():
 			return
 		case <-tick.C:
-			for _, u := range s.upstreams {
-				c, cancel := context.WithTimeout(ctx, 5*time.Second)
-				err := u.policy.Refresh(c)
-				if err == nil {
-					req, _ := http.NewRequestWithContext(c, "GET", u.base.String()+servicetype.HealthPath, nil)
-					x.authorize(req.Header, s)
-					resp, e := u.client.Do(req)
-					err = e
-					if e == nil {
-						io.Copy(io.Discard, io.LimitReader(resp.Body, 65536))
-						resp.Body.Close()
-						if resp.StatusCode >= 500 {
-							err = fmt.Errorf("health status %d", resp.StatusCode)
-						}
-					}
-				}
-				if err == nil && s.cfg.Models.Any {
-					x.discover(c, s, u)
-				}
-				cancel()
-				x.mu.Lock()
-				if err == nil {
-					u.eject = time.Time{}
-				} else {
-					u.eject = time.Now().Add(servicetype.EjectFor)
-				}
-				x.mu.Unlock()
+			err := x.probe(ctx, s)
+			x.mu.Lock()
+			if err == nil {
+				s.eject = time.Time{}
+			} else {
+				s.eject = time.Now().Add(EjectFor)
 			}
+			x.mu.Unlock()
 		}
 	}
 }
 
-// acquire reserves a request slot: busy at max_concurrent_requests,
-// rate_limited past max_requests_per_minute, upstream_unavailable when every
-// address is ejected. The least-loaded healthy address is chosen.
-func (x *Connector) acquire(s *service) (*upstream, string) {
+// acquire reserves a request slot: busy at max-concurrent-requests,
+// rate_limited past max-requests-per-minute, upstream_unavailable while the
+// service is unhealthy.
+func (x *Connector) acquire(s *service) string {
 	x.mu.Lock()
 	defer x.mu.Unlock()
 	if s.flight >= s.cfg.MaxConcurrentRequests {
-		return nil, "busy"
+		return "busy"
 	}
 	now := time.Now()
+	if now.Before(s.eject) {
+		return "upstream_unavailable"
+	}
 	if rate := float64(s.cfg.MaxRequestsPerMinute); rate > 0 {
 		s.tokens = math.Min(rate, s.tokens+now.Sub(s.last).Minutes()*rate)
 		s.last = now
 		if s.tokens < 1 {
-			return nil, "rate_limited"
+			return "rate_limited"
 		}
 		s.tokens--
 	}
-	var chosen *upstream
-	for _, u := range s.upstreams {
-		if now.Before(u.eject) {
-			continue
-		}
-		if chosen == nil || u.flight < chosen.flight {
-			chosen = u
-		}
-	}
-	if chosen == nil {
-		return nil, "upstream_unavailable"
-	}
 	s.flight++
-	chosen.flight++
-	return chosen, ""
+	return ""
 }
-func (x *Connector) release(s *service, u *upstream, bad bool) {
+func (x *Connector) release(s *service) {
 	x.mu.Lock()
 	defer x.mu.Unlock()
 	s.flight--
-	u.flight--
-	if bad {
-		for _, other := range s.upstreams {
-			if other != u && !time.Now().Before(other.eject) {
-				u.eject = time.Now().Add(servicetype.EjectFor)
-				break
-			}
-		}
-	}
 }
 
 // errorResponse writes a connector-generated HTTP error carrying a closed error code.
@@ -345,10 +330,6 @@ func timedOut(err error) bool {
 	var n net.Error
 	return errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &n) && n.Timeout())
 }
-func connectFailed(err error) bool {
-	var op *net.OpError
-	return errors.As(err, &op) && op.Op == "dial"
-}
 
 // ReopenLogs changes the access log file without interrupting active streams.
 func (x *Connector) ReopenLogs() error {
@@ -369,12 +350,14 @@ func (x *Connector) ReopenLogs() error {
 	return nil
 }
 
-// forwarded request headers; each type may add its own (e.g. Anthropic-Version).
-var forwarded = []string{"Content-Type", "Accept", "X-Request-Id"}
+// forwarded are the only request headers sent upstream. Anthropic-Version and
+// Anthropic-Beta select the Anthropic Messages API version and features; they
+// carry no credential or routing, and other servers ignore them.
+var forwarded = []string{"Content-Type", "Accept", "X-Request-Id", "Anthropic-Version", "Anthropic-Beta"}
 
-func cleanHeaders(in http.Header, extra []string) http.Header {
+func cleanHeaders(in http.Header) http.Header {
 	h := make(http.Header)
-	for _, k := range append(forwarded, extra...) {
+	for _, k := range forwarded {
 		if v := in.Get(k); v != "" {
 			h.Set(k, v)
 		}
@@ -382,32 +365,11 @@ func cleanHeaders(in http.Header, extra []string) http.Header {
 	return h
 }
 
-// authorize adds the service's api_key, the only credential the connector sends upstream.
+// authorize adds the service's api-key, the only credential the connector sends upstream.
 func (x *Connector) authorize(h http.Header, s *service) {
 	if s.cfg.APIKey != "" {
 		h.Set("Authorization", "Bearer "+s.cfg.APIKey)
 	}
-}
-
-// allowed reports whether the service accepts this request (method WEBSOCKET for upgrades).
-func (s *service) allowed(method, path string) bool {
-	if s.cfg.Type == protocol.TypeCustom {
-		for _, r := range s.cfg.Paths {
-			if r.Method == method && r.Path == path {
-				return true
-			}
-		}
-		return false
-	}
-	return s.typ.Allows(method, path)
-}
-
-// upstreamPath maps the gateway-facing path through api_path.
-func (s *service) upstreamPath(path string) string {
-	if s.cfg.Type == protocol.TypeCustom {
-		return path
-	}
-	return s.typ.UpstreamPath(s.cfg.APIPath, path)
 }
 
 func (x *Connector) ServeStream(parent context.Context, raw net.Conn) {
@@ -439,7 +401,7 @@ func (x *Connector) ServeStream(parent context.Context, raw net.Conn) {
 	var storageHandler *storage.Handler
 	if s != nil {
 		storageHandler = s.storage
-		entry.Type = s.cfg.Type
+		entry.Kind = s.cfg.Kind
 	}
 	x.mu.Unlock()
 	if h.Kind != "http" && h.Kind != "websocket" && h.Kind != "storage" {
@@ -451,7 +413,7 @@ func (x *Connector) ServeStream(parent context.Context, raw net.Conn) {
 		switch {
 		case s == nil:
 			entry.Error = "route_not_found"
-		case s.cfg.Type != protocol.TypeStorage:
+		case s.cfg.Kind != config.KindS3:
 			entry.Error = "wrong_route_type"
 		case storageHandler == nil:
 			entry.Error = "backend_unavailable"
@@ -469,7 +431,7 @@ func (x *Connector) ServeStream(parent context.Context, raw net.Conn) {
 		entry.Status = errorResponse(raw, entry.Error)
 		return
 	}
-	if s.cfg.Type == protocol.TypeStorage {
+	if s.cfg.Kind == config.KindS3 {
 		entry.Error = "path_not_allowed"
 		entry.Status = errorResponse(raw, entry.Error)
 		return
@@ -500,7 +462,7 @@ func (x *Connector) ServeStream(parent context.Context, raw net.Conn) {
 	entry.Method, entry.Path = req.Method, req.URL.Path
 	path := req.RequestURI
 	// Queries are never forwarded; they are tolerated (and dropped) only on GET.
-	if req.URL.IsAbs() || req.URL.Host != "" || servicetype.ValidatePath(strings.Split(path, "?")[0]) != nil || strings.Contains(path, "?") && req.Method != "GET" {
+	if req.URL.IsAbs() || req.URL.Host != "" || config.ValidatePath(strings.Split(path, "?")[0]) != nil || strings.Contains(path, "?") && req.Method != "GET" {
 		fail("path_not_allowed")
 		return
 	}
@@ -510,48 +472,47 @@ func (x *Connector) ServeStream(parent context.Context, raw net.Conn) {
 			fail("path_not_allowed")
 			return
 		}
-		method = servicetype.WebSocket
-	} else if req.Method != "GET" && req.Method != "POST" && req.Method != "PUT" {
+		method = config.WebSocket
+	} else if req.Method != "GET" && req.Method != "POST" && req.Method != "PUT" && req.Method != "DELETE" {
 		fail("path_not_allowed")
 		return
 	}
-	if !s.allowed(method, req.URL.Path) {
+	if !s.cfg.Allows(method, req.URL.Path) {
 		fail("path_not_allowed")
 		return
-	}
-	if h.Kind == "http" && req.Method != "GET" {
-		ct, _, err := mime.ParseMediaType(req.Header.Get("Content-Type"))
-		ok := false
-		for _, v := range s.typ.ContentTypes {
-			ok = ok || ct == v
-		}
-		if err != nil || !ok {
-			fail("content_type_not_allowed")
-			return
-		}
 	}
 	maxBody := s.maxRequest
 	if req.ContentLength > maxBody {
 		fail("request_too_large")
 		return
 	}
-	// An allowlisted service answers its own model list.
-	if s.allow != nil && req.Method == "GET" && req.URL.Path == "/v1/models" {
-		list := s.allow.ModelList()
-		fmt.Fprintf(c, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", len(list), list)
-		entry.Status, entry.BytesOut = 200, int64(len(list))
-		return
+	// A service that checks models inspects every request body: POST and PUT
+	// bodies must be JSON or multipart (so the model can be read), and GET
+	// and DELETE requests may not carry one.
+	inspect := ""
+	if s.allow != nil && h.Kind == "http" {
+		ct, _, err := mime.ParseMediaType(req.Header.Get("Content-Type"))
+		switch {
+		case req.Method == "GET" || req.Method == "DELETE":
+			if req.ContentLength != 0 {
+				fail("invalid_request")
+				return
+			}
+		case err == nil && (ct == "application/json" || ct == "multipart/form-data"):
+			inspect = ct
+		default:
+			fail("content_type_not_allowed")
+			return
+		}
 	}
-	u, code := x.acquire(s)
-	if code != "" {
+	if code := x.acquire(s); code != "" {
 		fail(code)
 		return
 	}
-	bad := false
-	defer func() { x.release(s, u, bad) }()
-	entry.UpstreamHost = u.base.Host
+	defer x.release(s)
+	entry.UpstreamHost = s.base.Host
 	if h.Kind == "websocket" {
-		entry.Status, entry.BytesIn, entry.BytesOut, bad = x.websocket(ctx, c, br, s, u, req)
+		entry.Status, entry.BytesIn, entry.BytesOut = x.websocket(ctx, c, br, s, req)
 		return
 	}
 	body := &counted{r: req.Body, source: req.Body, max: maxBody, touch: c.touch}
@@ -587,11 +548,11 @@ func (x *Connector) ServeStream(parent context.Context, raw net.Conn) {
 			fail("invalid_request")
 		}
 	}
-	if s.allow != nil && req.Method != "GET" {
-		ct, params, _ := mime.ParseMediaType(req.Header.Get("Content-Type"))
-		switch ct {
+	if inspect != "" {
+		_, params, _ := mime.ParseMediaType(req.Header.Get("Content-Type"))
+		switch inspect {
 		case "application/json":
-			// Bounded by the type's request limit (and the service's concurrency) like any body.
+			// Bounded by the request limit (and the service's concurrency) like any body.
 			data, err := io.ReadAll(body)
 			if err != nil {
 				modelError(err)
@@ -645,8 +606,8 @@ func (x *Connector) ServeStream(parent context.Context, raw net.Conn) {
 			upstreamBody, upstreamLength = pr, -1
 		}
 	}
-	target := *u.base
-	target.Path = s.upstreamPath(req.URL.Path)
+	target := *s.base
+	target.Path = req.URL.Path
 	target.RawQuery = ""
 	requestCtx, cancelRequest := context.WithCancel(ctx)
 	defer cancelRequest()
@@ -655,7 +616,7 @@ func (x *Connector) ServeStream(parent context.Context, raw net.Conn) {
 		return
 	}
 	up.ContentLength = upstreamLength
-	up.Header = cleanHeaders(req.Header, s.typ.Headers)
+	up.Header = cleanHeaders(req.Header)
 	x.authorize(up.Header, s)
 	idle := s.cfg.IdleTimeout
 	var idleExpired atomic.Bool
@@ -668,17 +629,16 @@ func (x *Connector) ServeStream(parent context.Context, raw net.Conn) {
 			return
 		}
 	}
-	resp, e := u.client.Do(up)
+	resp, e := s.client.Do(up)
 	if e != nil {
-		bad = connectFailed(e)
 		code := "upstream_error"
 		if timedOut(e) || idleExpired.Load() {
 			code = "upstream_timeout"
 		}
 		if body.overflow.Load() {
-			bad, code = false, "request_too_large"
+			code = "request_too_large"
 		} else if rewriteInvalid.Load() {
-			bad, code = false, "invalid_request"
+			code = "invalid_request"
 		}
 		fail(code)
 		return
@@ -687,7 +647,6 @@ func (x *Connector) ServeStream(parent context.Context, raw net.Conn) {
 	c.touch()
 	timer.Reset(idle)
 	entry.Status = resp.StatusCode
-	bad = resp.StatusCode == 502 || resp.StatusCode == 503 || resp.StatusCode == 504
 	resp.Trailer = nil
 	resp.Header = cleanResponse(resp.Header)
 	limit := s.maxResponse
@@ -719,25 +678,25 @@ func cleanResponse(in http.Header) http.Header {
 	}
 	return h
 }
-func (x *Connector) websocket(ctx context.Context, c *idleConn, br *bufio.Reader, s *service, u *upstream, req *http.Request) (int, int64, int64, bool) {
-	target := *u.base
+func (x *Connector) websocket(ctx context.Context, c *idleConn, br *bufio.Reader, s *service, req *http.Request) (int, int64, int64) {
+	target := *s.base
 	if target.Scheme == "http" {
 		target.Scheme = "ws"
 	} else {
 		target.Scheme = "wss"
 	}
-	target.Path = s.upstreamPath(req.URL.Path)
-	d := websocket.Dialer{NetDialContext: u.policy.DialContext, HandshakeTimeout: c.idle, Proxy: nil}
-	headers := cleanHeaders(req.Header, s.typ.Headers)
+	target.Path = req.URL.Path
+	d := websocket.Dialer{NetDialContext: s.policy.DialContext, HandshakeTimeout: c.idle, Proxy: nil}
+	headers := cleanHeaders(req.Header)
 	x.authorize(headers, s)
 	ws, _, e := d.DialContext(ctx, target.String(), headers)
 	if e != nil {
 		errorResponse(c, "upstream_error")
-		return 502, 0, 0, true
+		return 502, 0, 0
 	}
 	defer ws.Close()
 	fmt.Fprint(c, "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n")
-	max := servicetype.MaxWebSocketMessageBytes
+	max := MaxWebSocketMessageBytes
 	ws.SetReadLimit(int64(max))
 	ws.UnderlyingConn().SetReadDeadline(time.Now().Add(c.idle))
 	done := make(chan error, 2)
@@ -789,7 +748,7 @@ func (x *Connector) websocket(ctx context.Context, c *idleConn, br *bufio.Reader
 	c.Close()
 	ws.Close()
 	<-done
-	return 101, atomic.LoadInt64(&in), atomic.LoadInt64(&out), false
+	return 101, atomic.LoadInt64(&in), atomic.LoadInt64(&out)
 }
 
 type endReader struct {
@@ -810,45 +769,9 @@ func (r *endReader) Read(p []byte) (int, error) {
 	return n, e
 }
 
-// discover refreshes the advertised model list of a models: any service from
-// the server's own model list.
-func (x *Connector) discover(ctx context.Context, s *service, u *upstream) {
-	if !s.typ.Allows("GET", "/v1/models") {
-		return
-	}
-	req, _ := http.NewRequestWithContext(ctx, "GET", u.base.String()+s.upstreamPath("/v1/models"), nil)
-	x.authorize(req.Header, s)
-	resp, e := u.client.Do(req)
-	if e != nil {
-		return
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
-		return
-	}
-	var data struct {
-		Data []struct {
-			ID string `json:"id"`
-		} `json:"data"`
-	}
-	if json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&data) != nil {
-		return
-	}
-	ids := []string{}
-	for _, m := range data.Data {
-		if len(ids) >= 256 {
-			break
-		}
-		if len(m.ID) > 0 && len(m.ID) <= 256 {
-			ids = append(ids, m.ID)
-		}
-	}
-	x.mu.Lock()
-	s.models = ids
-	x.mu.Unlock()
-}
-
-func (x *Connector) refreshDNS(ctx context.Context, u *upstream) {
+// refreshDNS re-resolves the service's pinned host every minute; a changed
+// answer marks it unhealthy (DNS changes never widen what may be dialed).
+func (x *Connector) refreshDNS(ctx context.Context, s *service) {
 	tick := time.NewTicker(60 * time.Second)
 	defer tick.Stop()
 	for {
@@ -857,13 +780,13 @@ func (x *Connector) refreshDNS(ctx context.Context, u *upstream) {
 			return
 		case <-tick.C:
 			c, cancel := context.WithTimeout(ctx, 5*time.Second)
-			e := u.policy.Refresh(c)
+			e := s.policy.Refresh(c)
 			cancel()
 			if e != nil {
 				x.mu.Lock()
-				u.eject = time.Now().Add(servicetype.EjectFor)
+				s.eject = time.Now().Add(EjectFor)
 				x.mu.Unlock()
-				log.Printf("upstream %s marked unhealthy: %v", u.base.Host, e)
+				log.Printf("service %s marked unhealthy: %v", s.cfg.Name, e)
 			}
 		}
 	}
@@ -893,7 +816,7 @@ func (x *Connector) startStorage(ctx context.Context, s *service) {
 			x.mu.Unlock()
 			return
 		}
-		x.auditStorage(storage.AuditEntry{Time: time.Now().UTC(), Origin: "local", Service: s.cfg.Name, Type: protocol.TypeStorage, Op: "initialize", Status: "backend_unavailable"})
+		x.auditStorage(storage.AuditEntry{Time: time.Now().UTC(), Origin: "local", Service: s.cfg.Name, Kind: config.KindS3, Op: "initialize", Status: "backend_unavailable"})
 		timer := time.NewTimer(time.Minute)
 		select {
 		case <-ctx.Done():

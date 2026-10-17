@@ -1,0 +1,36 @@
+# Placeholder v0.2 file shaped like a plant site's production file.
+upstream:
+  url: https://connect.example.com
+  token: cxn_abcdefghijklmnop_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+  public_keys: [AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=]
+  proxy_url: http://198.51.100.3:3128
+
+chat:
+  - name: glm
+    url: http://198.51.100.146:8000
+    models:
+      GLM-5.3-Flash: GLM-5.3-Flash-NVFP4
+    max_concurrent_requests: 64
+    idle_timeout: 15m
+    api_key: sk-placeholder-chat
+
+storage:
+  - name: s3-storage
+    endpoint: https://198.51.100.81:9000
+    bucket: cletus-example
+    prefix: cletus/
+    access_key: placeholder-access-key
+    secret_key: placeholder-secret-key
+    encryption_key: MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=
+    ca_certificate: |
+      -----BEGIN CERTIFICATE-----
+      MIIBiDCCAS+gAwIBAgIUWF6kOB1ycy7Hz4uZD6DEPWrrUWgwCgYIKoZIzj0EAwIw
+      GjEYMBYGA1UEAwwPRXhhbXBsZSBUZXN0IENBMB4XDTI2MTAxNjEyNDg1NFoXDTM2
+      MTAxMzEyNDg1NFowGjEYMBYGA1UEAwwPRXhhbXBsZSBUZXN0IENBMFkwEwYHKoZI
+      zj0CAQYIKoZIzj0DAQcDQgAENxXJjD+SmA9aahgSa2hZJspwlwyPwd+EOf2nSIY2
+      VifHSUBUqjGaUbDdGB6NmlfdcCdndH9X++hASMaw8DWqyKNTMFEwHQYDVR0OBBYE
+      FEcn+qp6iY9mwjpMuLy0k8xxOeZrMB8GA1UdIwQYMBaAFEcn+qp6iY9mwjpMuLy0
+      k8xxOeZrMA8GA1UdEwEB/wQFMAMBAf8wCgYIKoZIzj0EAwIDRwAwRAIgOevL2QBb
+      OP5Tgm6Wefh/bo2cZ98Z3B/npA+LFMNlnd4CIBhHMWhVYdWbDtySglGO/6LocyLm
+      OWjjxi0IWo5J/bbT
+      -----END CERTIFICATE-----

@@ -1,0 +1,39 @@
+health_listen 127.0.0.1:9877 not carried: the connector has no local health listener (use `eidonix-connector check` and the access log)
+the web proxy came from HTTPS_PROXY in v0.1; if this host needs one, set upstream.proxy
+gpu1: flavor vllm not carried; only the requests Eidonix uses for chat are allowed
+gpu1: not carried: POST /v1/completions
+gpu1: not carried: POST /v1/score
+gpu1: not carried: POST /rerank
+gpu1: not carried: POST /v1/rerank
+gpu1: models now restrict as well as rename: only chat-large may be used
+gpu2: not carried: POST /v1/completions
+gpu2: balance not carried (fixed internally)
+embed: flavor infinity: the server's API is at / rather than /v1
+embed: not carried: POST /rerank
+embed: models now restrict as well as rename: only nomic-embed may be used
+embed: upstream header X-Tenant not carried; the connector sends only api-key (as Authorization: Bearer)
+embed: health not carried (fixed internally)
+rerank: not carried: POST /rerank
+rerank: models now restrict as well as rename: only jina-reranker may be used
+stt: flavor openai not carried; only the requests Eidonix uses for transcription are allowed
+stt: not carried: POST /v1/audio/translations
+stt: models now restrict as well as rename: only whisper may be used
+stt: max_request_bytes not carried (fixed internally)
+convert: flavor gotenberg not carried; only the requests Eidonix uses for conversion are allowed
+convert: not carried: POST /forms/libreoffice/convert
+convert: not carried: POST /forms/pdfengines/convert
+voice-live: model aliases not carried: realtime services have no models
+files: encryption-key copied into the file; keep your backup of it
+files: part_size not carried (fixed internally)
+tool: custom service; check that allowed-endpoints lists exactly what it should allow
+tool: content_types not carried (fixed internally)
+gpu1: POST /v1/* allows every POST under /v1 (v0.2 allowed only chat/completions and responses)
+gpu1: GET /v1/models now reaches the server, which lists its own model names (not the aliases)
+gpu2: urls listed 2 addresses; v0.3 dials one, so only http://10.0.0.34:8000 is kept (put a load balancer in front of the others)
+gpu2: POST /v1/* allows every POST under /v1 (v0.2 allowed only chat/completions and responses)
+gpu2: models: any left out; the connector does not inspect this service's requests
+embed: api_path / is now part of the paths (POST /embeddings); point Eidonix at the new path
+tts: models: any left out; the connector does not inspect this service's requests
+image: models: any left out; the connector does not inspect this service's requests
+files: max_read_per_hour not carried (gone in v0.3)
+files: v0.3 has no storage folder; Eidonix uses the whole bucket cletus. The files are under cletus/: with the connector stopped, move them to the top of the bucket with: eidonix-connector storage move-to-root files --from cletus/

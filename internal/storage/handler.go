@@ -100,8 +100,13 @@ func (h *Handler) Serve(parent context.Context, raw net.Conn, br *bufio.Reader, 
 		entry.Status = code(err)
 		protocol.WriteStorageResult(c, protocol.StorageErrorResult(entry.Status), header.Op)
 	}
-	if e := protocol.ValidateStorageHeader(header, h.max, len(h.cfg.Prefix)); e != nil {
+	if e := protocol.ValidateStorageHeader(header, h.max, 0); e != nil {
 		fail(e)
+		return
+	}
+	// A read-only service refuses every operation that writes.
+	if h.cfg.ReadOnly && (header.Op == "put" || header.Op == "delete" || header.Op == "copy") {
+		fail(protocol.NewStorageError("forbidden"))
 		return
 	}
 	rawKey := header.Key
@@ -110,7 +115,7 @@ func (h *Handler) Serve(parent context.Context, raw net.Conn, br *bufio.Reader, 
 	} else if header.Op == "list" {
 		rawKey = header.Prefix
 	}
-	key, e := protocol.DecodeStorageKey(rawKey, len(h.cfg.Prefix), header.Op == "list")
+	key, e := protocol.DecodeStorageKey(rawKey, 0, header.Op == "list")
 	if e != nil {
 		fail(e)
 		return
@@ -138,7 +143,7 @@ func (h *Handler) Serve(parent context.Context, raw net.Conn, br *bufio.Reader, 
 		defer lifetimeStop()
 		c.ctx = lifetimeCtx
 		reader := protocol.NewStorageBodyReader(br, *header.Size, h.max, c.expectFIN)
-		info, err := h.upload(lifetimeCtx, h.cfg.Prefix+key, header.ContentType, reader, -1)
+		info, err := h.upload(lifetimeCtx, key, header.ContentType, reader, -1)
 		e = err
 		entry.Size = info.Size
 		if err == nil {
@@ -147,21 +152,21 @@ func (h *Handler) Serve(parent context.Context, raw net.Conn, br *bufio.Reader, 
 			entry.Size = info.Size
 		}
 	case "head":
-		result, e = h.head(ctx, h.cfg.Prefix+key)
+		result, e = h.head(ctx, key)
 	case "delete":
-		e = h.core.RemoveObject(ctx, h.cfg.Bucket, h.cfg.Prefix+key, minioRemoveOptions())
+		e = h.core.RemoveObject(ctx, h.cfg.Bucket, key, minioRemoveOptions())
 		result = protocol.StorageResult{V: protocol.Version, OK: true}
 	case "list":
 		result, e = h.list(ctx, key, header)
 	case "get":
-		result, body, bodySize, e = h.get(ctx, h.cfg.Prefix+key, header)
+		result, body, bodySize, e = h.get(ctx, key, header)
 	case "copy":
-		src, err := protocol.DecodeStorageKey(header.SrcKey, len(h.cfg.Prefix), false)
+		src, err := protocol.DecodeStorageKey(header.SrcKey, 0, false)
 		if err != nil {
 			e = err
 			break
 		}
-		result, e = h.copy(ctx, h.cfg.Prefix+src, h.cfg.Prefix+key)
+		result, e = h.copy(ctx, src, key)
 	}
 	if e != nil {
 		fail(e)

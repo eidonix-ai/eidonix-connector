@@ -91,9 +91,6 @@ func (h *Handler) get(ctx context.Context, key string, header protocol.StreamHea
 		opts.SetRange(header.Range[0], end)
 		result.Range = []int64{header.Range[0], end}
 	}
-	if !h.readBudget(n) {
-		return result, nil, 0, protocol.NewStorageError("rate_limited")
-	}
 	reader, got, _, e := h.core.GetObject(ctx, h.cfg.Bucket, key, opts)
 	if e != nil {
 		return result, nil, 0, e
@@ -127,7 +124,7 @@ func (h *Handler) upload(ctx context.Context, key, contentType string, reader io
 				if abortErr != nil {
 					status = backendCode(abortErr)
 				}
-				h.record(AuditEntry{Origin: "local", Op: "abort_multipart", KeyHash: h.hash(strings.TrimPrefix(key, h.cfg.Prefix)), Status: status})
+				h.record(AuditEntry{Origin: "local", Op: "abort_multipart", KeyHash: h.hash(key), Status: status})
 			}
 		}
 	}()
@@ -239,7 +236,7 @@ func (h *Handler) list(ctx context.Context, key string, header protocol.StreamHe
 	defer cancel()
 	start := ""
 	if header.Token != "" {
-		decoded, e := protocol.DecodeStorageKey(header.Token, len(h.cfg.Prefix), false)
+		decoded, e := protocol.DecodeStorageKey(header.Token, 0, false)
 		if e != nil {
 			var v *protocol.StorageError
 			if errors.As(e, &v) && v.Code == "key_too_long" {
@@ -247,13 +244,13 @@ func (h *Handler) list(ctx context.Context, key string, header protocol.StreamHe
 			}
 			return protocol.StorageResult{}, protocol.NewStorageError("invalid_request")
 		}
-		start = h.cfg.Prefix + decoded
+		start = decoded
 	}
 	result := protocol.StorageResult{V: protocol.Version, OK: true, Objects: []protocol.StorageObject{}}
 	last := ""
 	encodedBytes := 128 + 1400 // Reserve the envelope and largest continuation token.
 	scanned := 0
-	for info := range h.core.Client.ListObjects(ctx, h.cfg.Bucket, minio.ListObjectsOptions{Prefix: h.cfg.Prefix + key, Recursive: header.Recursive, StartAfter: start, MaxKeys: header.Max}) {
+	for info := range h.core.Client.ListObjects(ctx, h.cfg.Bucket, minio.ListObjectsOptions{Prefix: key, Recursive: header.Recursive, StartAfter: start, MaxKeys: header.Max}) {
 		if info.Err != nil {
 			return result, info.Err
 		}
@@ -261,11 +258,11 @@ func (h *Handler) list(ctx context.Context, key string, header protocol.StreamHe
 		if scanned > 10000 {
 			return result, errBackendInvalid
 		}
-		if !strings.HasPrefix(info.Key, h.cfg.Prefix+key) {
+		if !strings.HasPrefix(info.Key, key) {
 			continue
 		}
-		relative := strings.TrimPrefix(info.Key, h.cfg.Prefix)
-		if protocol.ValidateRelativeKey(relative, len(h.cfg.Prefix), false) != nil {
+		relative := info.Key
+		if protocol.ValidateRelativeKey(relative, 0, false) != nil {
 			continue
 		}
 		if !validInfo(info, h.max) {

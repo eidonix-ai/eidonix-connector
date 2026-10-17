@@ -1,10 +1,12 @@
 // Package config reads and validates the connector's single YAML file,
-// /etc/eidonix-connector/connector.yaml: the upstream it connects out to, the
-// services it shares (grouped by type), and where it logs. Secrets live in the
-// same file, so the file itself is protected by a permission gate.
+// /etc/eidonix-connector/connector.yaml: the site it belongs to, the upstream
+// it connects out to, the services it shares (by name) and where it logs.
+// Secrets live in the same file, so the file itself is protected by a
+// permission gate.
 package config
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -13,7 +15,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/eidonix-ai/eidonix-connector/internal/servicetype"
+	"github.com/eidonix-ai/eidonix-connector/protocol"
 )
 
 const (
@@ -22,12 +24,22 @@ const (
 	// ServiceGroup is the packaged service account's group.
 	ServiceGroup = "eidonix-connector"
 	maxFileBytes = 1 << 20
+
+	// Service kinds.
+	KindHTTP = protocol.KindHTTP
+	KindS3   = protocol.KindS3
+
+	// Defaults for settings the file may leave out.
+	DefaultMaxConcurrentRequests = 16
+	DefaultIdleTimeout           = 5 * time.Minute
 )
 
-// Config is a validated configuration. Services are in canonical type order,
-// then file order.
+// ErrOldFormat reports a v0.2 file (services grouped by type).
+var ErrOldFormat = errors.New("this is a v0.2 configuration (services grouped by type); v0.3 lists services by name under services:")
+
+// Config is a validated configuration. Services are in file order.
 type Config struct {
-	Name      string
+	Site      string
 	Upstream  Upstream
 	Services  []Service
 	AccessLog string
@@ -39,38 +51,40 @@ type Upstream struct {
 	URL           string
 	Token         string
 	PublicKeys    []string
-	ProxyURL      string
+	Proxy         string
 	CACertificate string
 }
 
-// Service is one shared service. Storage is set only for type storage; Paths
-// only for type custom.
+// Service is one shared service. An http service has Endpoints (and
+// optionally Models, Health, APIKey); an s3 service has Storage.
 type Service struct {
-	Name                  string
-	Type                  string
-	Line                  int
-	URLs                  []string
-	APIPath               string
+	Name string
+	Kind string
+	Line int
+	// Address is as written in the file; URL is what the connector dials:
+	// http://host:port for host:port, or the https:// address itself.
+	Address               string
+	URL                   string
+	Endpoints             []Endpoint
 	Models                Models
+	Health                string
+	APIKey                string
 	MaxConcurrentRequests int
 	MaxRequestsPerMinute  int
 	IdleTimeout           time.Duration
-	APIKey                string
-	Paths                 []servicetype.Request
 	Storage               *Storage
 }
 
-// Models is a service's model policy. With Any, any model passes through;
-// otherwise Names (as callers send them, in file order) is the allowlist and
-// Target maps each name to the name the server uses.
+// Models is a service's model list. Names are the names Cletus uses, in file
+// order; Target maps each to the model's name on the server. Without names
+// the connector does not inspect request bodies.
 type Models struct {
-	Any    bool
 	Names  []string
 	Target map[string]string
 }
 
-// Allowlist reports whether the service restricts models to Names.
-func (m Models) Allowlist() bool { return !m.Any && len(m.Names) > 0 }
+// Set reports whether the service checks models.
+func (m Models) Set() bool { return len(m.Names) > 0 }
 
 // Renamed reports whether any name differs from its server name.
 func (m Models) Renamed() bool {
@@ -82,8 +96,16 @@ func (m Models) Renamed() bool {
 	return false
 }
 
-// Contract returns the service's type contract.
-func (s Service) Contract() servicetype.Type { t, _ := servicetype.Lookup(s.Type); return t }
+// Allows reports whether the service accepts method (WEBSOCKET for an
+// upgrade) on an already canonical path.
+func (s Service) Allows(method, path string) bool {
+	for _, e := range s.Endpoints {
+		if e.Matches(method, path) {
+			return true
+		}
+	}
+	return false
+}
 
 // FileInfo is what the permission gate saw.
 type FileInfo struct {
@@ -100,6 +122,9 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 	c, err := Parse(data)
+	if errors.Is(err, ErrOldFormat) {
+		return nil, fmt.Errorf("%s: %w\nConvert it: eidonix-connector convert --site <connector name in Setup> %s > %s.new\nthen review the notes, run eidonix-connector check --config %s.new and replace the file", path, err, path, path, path)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
@@ -169,7 +194,7 @@ func groupName(gid int) string {
 }
 
 // Secrets lists the secret settings that are set, for check output, e.g.
-// "token", "api_key (gpu1)".
+// "token", "api-key (gpu1)".
 func (c *Config) Secrets() []string {
 	out := []string{}
 	if c.Upstream.Token != "" {
@@ -177,17 +202,17 @@ func (c *Config) Secrets() []string {
 	}
 	for _, s := range c.Services {
 		if s.APIKey != "" {
-			out = append(out, "api_key ("+s.Name+")")
+			out = append(out, "api-key ("+s.Name+")")
 		}
 		if st := s.Storage; st != nil {
 			if st.AccessKey != "" {
-				out = append(out, "access_key ("+s.Name+")")
+				out = append(out, "access-key ("+s.Name+")")
 			}
 			if st.SecretKey != "" {
-				out = append(out, "secret_key ("+s.Name+")")
+				out = append(out, "secret-key ("+s.Name+")")
 			}
 			if len(st.EncryptionKey) > 0 {
-				out = append(out, "encryption_key ("+s.Name+")")
+				out = append(out, "encryption-key ("+s.Name+")")
 			}
 		}
 	}
@@ -195,4 +220,4 @@ func (c *Config) Secrets() []string {
 }
 
 // SecretFields are the setting names whose values are secret.
-var SecretFields = map[string]bool{"token": true, "api_key": true, "access_key": true, "secret_key": true, "encryption_key": true}
+var SecretFields = map[string]bool{"token": true, "api-key": true, "access-key": true, "secret-key": true, "encryption-key": true}

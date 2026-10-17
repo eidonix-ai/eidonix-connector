@@ -12,18 +12,17 @@ import (
 	"testing"
 	"time"
 
-	"github.com/eidonix-ai/eidonix-connector/internal/servicetype"
 	"github.com/eidonix-ai/eidonix-connector/protocol"
 )
 
 func TestDeniedRequestsBeforeDial(t *testing.T) {
-	x := newConnector(t, chatConfig(t, "http://127.0.0.1:1"))
+	x := newConnector(t, testConfig(t, "  chat:\n    address: %s\n    allowed-endpoints: "+chatEndpoints+"\n    models: [m]\n", "http://127.0.0.1:1"))
 	x.services["chat"].maxRequest = 4
 	for _, tc := range []struct {
 		path, ct string
 		size     int
 		status   int
-	}{{"/admin", "application/json", 0, 403}, {"/v1/../admin", "application/json", 0, 403}, {"/v1//chat/completions", "application/json", 0, 403}, {"/v1/chat/completions?fetch=bad", "application/json", 0, 403}, {"/v1/completions", "application/json", 0, 403}, {"/v1/score", "application/json", 0, 403}, {"/v1/chat/completions", "text/plain", 0, 403}, {"/v1/chat/completions", "application/json", 5, 413}} {
+	}{{"/admin", "application/json", 0, 403}, {"/v1/../admin", "application/json", 0, 403}, {"/v1//chat/completions", "application/json", 0, 403}, {"/v1/chat/completions?fetch=bad", "application/json", 0, 403}, {"/v1/completions", "application/json", 0, 403}, {"/v1/score", "application/json", 0, 403}, {"/v1/chat/completions", "text/plain", 0, 403}, {"/v1/chat/completions", "application/json", 5, 413}, {"/v1/", "application/json", 0, 403}, {"/v1/chat/completions/", "application/json", 0, 403}, {"/v1/chat%2fcompletions", "application/json", 0, 403}} {
 		t.Run(tc.path+tc.ct, func(t *testing.T) {
 			a, b := net.Pipe()
 			defer b.Close()
@@ -45,22 +44,26 @@ func TestDeniedRequestsBeforeDial(t *testing.T) {
 	}
 }
 func TestHeaderSanitizing(t *testing.T) {
-	h := cleanHeaders(http.Header{"Authorization": {"secret"}, "Cookie": {"cookie"}, "Host": {"evil"}, "X-Forwarded-For": {"fake"}, "Content-Type": {"application/json"}, "Fileurl": {"http://evil"}, "Anthropic-Version": {"2023-06-01"}}, nil)
-	if len(h) != 1 || h.Get("Content-Type") != "application/json" {
+	h := cleanHeaders(http.Header{"Authorization": {"secret"}, "Cookie": {"cookie"}, "Host": {"evil"}, "X-Forwarded-For": {"fake"}, "Content-Type": {"application/json"}, "Fileurl": {"http://evil"}, "Anthropic-Version": {"2023-06-01"}, "Anthropic-Beta": {"x"}, "Openai-Organization": {"o"}, "Proxy-Authorization": {"p"}})
+	if len(h) != 3 || h.Get("Content-Type") != "application/json" || h.Get("Anthropic-Version") != "2023-06-01" || h.Get("Anthropic-Beta") != "x" {
 		t.Fatalf("unsafe forwarded headers %v", h)
 	}
 }
 
-func TestHealthAuthDiscoveryAndRecovery(t *testing.T) {
-	var fail atomic.Bool
-	var unauthorized atomic.Bool
+// TestHealthPathAuthAndRecovery: a service with health is probed with GET
+// <health> and its api-key; 5xx marks it unhealthy (requests are refused
+// without contacting it), any other answer healthy again.
+func TestHealthPathAuthAndRecovery(t *testing.T) {
+	var fail, unauthorized atomic.Bool
+	var probes atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer local-secret" {
 			unauthorized.Store(true)
 			w.WriteHeader(401)
 			return
 		}
-		if r.URL.Path == "/health" {
+		if r.URL.Path == "/healthz" {
+			probes.Add(1)
 			if fail.Load() {
 				w.WriteHeader(503)
 			} else {
@@ -68,18 +71,12 @@ func TestHealthAuthDiscoveryAndRecovery(t *testing.T) {
 			}
 			return
 		}
-		if r.URL.Path == "/v1/models" {
-			w.Header().Set("Content-Type", "application/json")
-			io.WriteString(w, `{"data":[{"id":"test-model"}]}`)
-			return
-		}
-		http.NotFound(w, r)
+		io.WriteString(w, "served")
 	}))
 	defer server.Close()
 	healthInterval = 50 * time.Millisecond
-	defer func() { healthInterval = servicetype.HealthInterval }()
-	cfg := testConfig(t, "chat:\n  - name: chat\n    url: %s\n    models: any\n    api_key: local-secret\n", server.URL)
-	x := newConnector(t, cfg)
+	defer func() { healthInterval = HealthInterval }()
+	x := newConnector(t, testConfig(t, "  chat:\n    address: %s\n    allowed-endpoints: "+chatEndpoints+"\n    health: /healthz\n    api-key: local-secret\n", server.URL))
 	wait := func(check func() bool) {
 		t.Helper()
 		deadline := time.Now().Add(3 * time.Second)
@@ -90,12 +87,40 @@ func TestHealthAuthDiscoveryAndRecovery(t *testing.T) {
 			time.Sleep(10 * time.Millisecond)
 		}
 	}
-	wait(func() bool { s := x.StatusServices()[0]; return len(s.Models) == 1 && s.Models[0] == "test-model" })
+	wait(func() bool { return probes.Load() > 0 && x.StatusServices()[0].Healthy })
 	fail.Store(true)
 	wait(func() bool { return !x.StatusServices()[0].Healthy })
+	if r, _ := exchange(t, x, "chat", get("/v1/models")); r.StatusCode != 502 || r.Header.Get(protocol.HeaderError) != "upstream_unavailable" {
+		t.Fatal(r.StatusCode, r.Header)
+	}
 	fail.Store(false)
 	wait(func() bool { return x.StatusServices()[0].Healthy })
+	if r, body := exchange(t, x, "chat", get("/v1/models")); r.StatusCode != 200 || string(body) != "served" {
+		t.Fatal(r.StatusCode, string(body))
+	}
 	if unauthorized.Load() {
-		t.Fatal("health or model discovery omitted local auth")
+		t.Fatal("health probe omitted local auth")
+	}
+}
+
+// TestReachabilityWithoutHealth: without health the service is healthy while
+// its address accepts connections, and no HTTP request is made.
+func TestReachabilityWithoutHealth(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { requests.Add(1) }))
+	healthInterval = 50 * time.Millisecond
+	defer func() { healthInterval = HealthInterval }()
+	x := newConnector(t, chatConfig(t, server.URL))
+	time.Sleep(200 * time.Millisecond)
+	if !x.StatusServices()[0].Healthy || requests.Load() != 0 {
+		t.Fatal("reachable service unhealthy, or probed over HTTP")
+	}
+	server.Close()
+	deadline := time.Now().Add(3 * time.Second)
+	for x.StatusServices()[0].Healthy {
+		if time.Now().After(deadline) {
+			t.Fatal("unreachable service stayed healthy")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }

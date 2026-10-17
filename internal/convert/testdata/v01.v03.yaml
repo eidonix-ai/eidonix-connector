@@ -1,0 +1,103 @@
+# Converted to v0.3 by eidonix-connector convert.
+# Review the notes it printed, then run: eidonix-connector check
+
+site: example-gpu-site
+upstream:
+  url: https://connect.example.com
+  token: cxn_abcdefghijklmnop_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+  public-keys: [BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBA=, AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=]
+services:
+  gpu1: # was chat
+    address: 10.0.0.33:8000
+    allowed-endpoints: [POST /v1/*, GET /v1/models]
+    models:
+      Qwen/Qwen3-32B: {alias: chat-large}
+    health: /health
+    max-concurrent-requests: 32
+    idle-timeout: 15m
+  gpu2: # was chat
+    address: 10.0.0.34:8000
+    allowed-endpoints: [POST /v1/*, GET /v1/models]
+    health: /health
+    max-concurrent-requests: 32
+    max-requests-per-minute: 150
+    idle-timeout: 15m
+  embed: # was embeddings
+    address: 10.0.0.30:8001
+    allowed-endpoints: [POST /embeddings]
+    models:
+      nomic-ai/nomic-embed-text-v1.5: {alias: nomic-embed}
+    health: /health
+    api-key: sk-placeholder-embed
+    max-concurrent-requests: 32
+    idle-timeout: 2m
+  rerank: # was rerank
+    address: 10.0.0.30:8006
+    allowed-endpoints: [POST /v1/rerank]
+    models:
+      jina-reranker-v3: {alias: jina-reranker}
+    health: /health
+    max-concurrent-requests: 32
+    idle-timeout: 2m
+  stt: # was transcription
+    address: 10.0.0.30:8007
+    allowed-endpoints: [POST /v1/audio/transcriptions]
+    models:
+      /models/faster-whisper-large-v3-turbo: {alias: whisper}
+    health: /health
+    max-concurrent-requests: 8
+  tts: # was speech
+    address: 10.0.0.30:8009
+    allowed-endpoints: [POST /v1/audio/speech, GET /v1/audio/voices]
+    health: /health
+    max-concurrent-requests: 8
+    idle-timeout: 2m
+  image: # was image
+    address: 10.0.0.30:8010
+    allowed-endpoints: [POST /v1/images/*]
+    health: /health
+    max-concurrent-requests: 1
+    idle-timeout: 10m
+  ocr: # was document
+    address: 10.0.0.30:8002
+    allowed-endpoints: [POST /layout-parsing]
+    health: /health
+    max-concurrent-requests: 4
+    idle-timeout: 10m
+  convert: # was conversion
+    address: 10.0.0.30:3000
+    allowed-endpoints: [POST /convert, POST /extract]
+    health: /health
+    max-concurrent-requests: 4
+    idle-timeout: 10m
+  voice-live: # was realtime
+    address: 10.0.0.30:8011
+    allowed-endpoints: [WEBSOCKET /v1/stream, GET /v1/config]
+    health: /health
+    max-concurrent-requests: 4
+  files: # was storage
+    kind: s3
+    address: https://s3.example.com:9000
+    bucket: cletus
+    access-key: placeholder-access-key
+    secret-key: placeholder-secret-key
+    encryption: sse-c
+    encryption-key: MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=
+    ca-certificate: |
+      -----BEGIN CERTIFICATE-----
+      MIIBiDCCAS+gAwIBAgIUWF6kOB1ycy7Hz4uZD6DEPWrrUWgwCgYIKoZIzj0EAwIw
+      GjEYMBYGA1UEAwwPRXhhbXBsZSBUZXN0IENBMB4XDTI2MTAxNjEyNDg1NFoXDTM2
+      MTAxMzEyNDg1NFowGjEYMBYGA1UEAwwPRXhhbXBsZSBUZXN0IENBMFkwEwYHKoZI
+      zj0CAQYIKoZIzj0DAQcDQgAENxXJjD+SmA9aahgSa2hZJspwlwyPwd+EOf2nSIY2
+      VifHSUBUqjGaUbDdGB6NmlfdcCdndH9X++hASMaw8DWqyKNTMFEwHQYDVR0OBBYE
+      FEcn+qp6iY9mwjpMuLy0k8xxOeZrMB8GA1UdIwQYMBaAFEcn+qp6iY9mwjpMuLy0
+      k8xxOeZrMA8GA1UdEwEB/wQFMAMBAf8wCgYIKoZIzj0EAwIDRwAwRAIgOevL2QBb
+      OP5Tgm6Wefh/bo2cZ98Z3B/npA+LFMNlnd4CIBhHMWhVYdWbDtySglGO/6LocyLm
+      OWjjxi0IWo5J/bbT
+      -----END CERTIFICATE-----
+  tool: # was custom
+    address: 10.0.0.40:9000
+    allowed-endpoints: [POST /v1/run, WEBSOCKET /v1/events]
+    health: /health
+    max-concurrent-requests: 32
+    idle-timeout: 2m

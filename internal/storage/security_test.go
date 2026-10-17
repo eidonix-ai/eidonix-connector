@@ -22,7 +22,7 @@ func testHandler(t *testing.T, serve http.HandlerFunc, audit func(AuditEntry)) (
 	t.Helper()
 	server := httptest.NewServer(serve)
 	cfg := config.StorageDefaults()
-	cfg.Endpoint, cfg.Bucket, cfg.Prefix, cfg.PathStyle, cfg.Encryption, cfg.AllowHTTP = server.URL, "test-bucket", "objects/", true, "none", true
+	cfg.Endpoint, cfg.Bucket, cfg.PathStyle, cfg.Encryption = server.URL, "test-bucket", true, "none"
 	cfg.MaxFileSize, cfg.PartSize, cfg.IdleTimeout = 10<<20, 5<<20, 2*time.Second
 	h, e := newHandler(context.Background(), "files", 2, cfg, "test-access", "test-secret", nil, audit)
 	if e != nil {
@@ -36,7 +36,7 @@ func TestInvalidKeysNeverReachBackend(t *testing.T) {
 	var calls atomic.Int32
 	h, _ := testHandler(t, func(w http.ResponseWriter, r *http.Request) { calls.Add(1); w.WriteHeader(500) }, nil)
 	zero := int64(0)
-	for _, key := range []string{"../escape", "/absolute", "a//b", "a\\b", "a\x00b", "a\u0085b", ".eidonix-connector/probe/x", strings.Repeat("k", 1018)} {
+	for _, key := range []string{"../escape", "/absolute", "a//b", "a\\b", "a\x00b", "a\u0085b", ".eidonix-connector/probe/x", strings.Repeat("k", 1024)} {
 		for _, header := range []protocol.StreamHeader{{Op: "head", Key: b64(key)}, {Op: "put", Key: b64(key), Size: &zero}, {Op: "delete", Key: b64(key)}, {Op: "get", Key: b64(key)}, {Op: "copy", SrcKey: b64(key), DstKey: b64("safe")}, {Op: "copy", SrcKey: b64("safe"), DstKey: b64(key)}, {Op: "list", Prefix: b64(key), Max: 1}, {Op: "list", Prefix: "", Token: b64(key), Max: 1}} {
 			r, _ := storageExchange(t, h, header, nil)
 			if r["ok"] == true {
@@ -94,20 +94,36 @@ func TestRateAndAudit(t *testing.T) {
 	if len(entries) != 2 || entries[1].Status != "rate_limited" || len(entries[1].KeyHash) != 64 || strings.Contains(entries[1].KeyHash, "filename") {
 		t.Fatalf("invalid audit %+v", entries)
 	}
-	// Access log lines name the service, its type and the caller the gateway reported.
-	if e := entries[0]; e.Service != "files" || e.Type != "storage" || e.OrgSlug != "example-org" || e.OrgID != "7" || e.UserKeyID != "42" || e.RequestID != "docker-test" || e.Time.IsZero() || e.Origin != "upstream" {
+	// Access log lines name the service, its kind and the caller the gateway reported.
+	if e := entries[0]; e.Service != "files" || e.Kind != "s3" || e.OrgSlug != "example-org" || e.OrgID != "7" || e.UserKeyID != "42" || e.RequestID != "docker-test" || e.Time.IsZero() || e.Origin != "upstream" {
 		t.Fatalf("access entry %+v", e)
 	}
 }
-func TestReadBudget(t *testing.T) {
-	h, _ := testHandler(t, func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(500) }, nil)
-	h.cfg.MaxReadPerHour = 3
-	if !h.readBudget(3) || h.readBudget(1) {
-		t.Fatal("read budget not enforced")
+// TestReadOnlyRefusesWrites: a read-only service refuses put, delete and copy
+// before any backend call, and still serves reads.
+func TestReadOnlyRefusesWrites(t *testing.T) {
+	var calls atomic.Int32
+	h, _ := testHandler(t, func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		if r.Method != "GET" && r.Method != "HEAD" {
+			t.Errorf("read-only service issued %s", r.Method)
+		}
+		w.WriteHeader(404)
+	}, nil)
+	h.cfg.ReadOnly = true
+	size := int64(3)
+	for _, header := range []protocol.StreamHeader{{Op: "put", Key: b64("a"), Size: &size}, {Op: "delete", Key: b64("a")}, {Op: "copy", SrcKey: b64("a"), DstKey: b64("b")}} {
+		r, _ := storageExchange(t, h, header, putFrames([]byte("abc"), false))
+		if errorCode(r) != "forbidden" {
+			t.Fatalf("%s: %v", header.Op, r)
+		}
 	}
-	h.hour = time.Now().Add(-time.Hour)
-	if !h.readBudget(1) {
-		t.Fatal("read budget did not renew")
+	if calls.Load() != 0 {
+		t.Fatalf("refused writes made %d backend calls", calls.Load())
+	}
+	r, _ := storageExchange(t, h, protocol.StreamHeader{Op: "head", Key: b64("a")}, nil)
+	if errorCode(r) != "not_found" || calls.Load() == 0 {
+		t.Fatalf("read refused: %v", r)
 	}
 }
 func TestRedirectNeverFollowed(t *testing.T) {
@@ -133,7 +149,7 @@ func TestSweepConfinedOldUploadsAndOwnActive(t *testing.T) {
 			for _, u := range []struct {
 				key, id string
 				age     time.Duration
-			}{{"objects/old", "old", 25 * time.Hour}, {"objects/fresh", "fresh", time.Hour}, {"elsewhere/old", "outside", 25 * time.Hour}, {"objects/own", "own", 25 * time.Hour}, {"objects/.eidonix-connector/probe/abandoned", "probe", 25 * time.Hour}} {
+			}{{"folder/old", "old", 25 * time.Hour}, {"fresh", "fresh", time.Hour}, {"bad//key", "invalid", 25 * time.Hour}, {"own", "own", 25 * time.Hour}, {".eidonix-connector/probe/abandoned", "probe", 25 * time.Hour}} {
 				fmt.Fprintf(w, "<Upload><Key>%s</Key><UploadId>%s</UploadId><Initiated>%s</Initiated></Upload>", u.key, u.id, now.Add(-u.age).Format(time.RFC3339))
 			}
 			io.WriteString(w, `</ListMultipartUploadsResult>`)
@@ -210,7 +226,7 @@ func TestChecksReadOnlyAndFailedProbeCleaned(t *testing.T) {
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if len(writeKeys) != 1 || len(deletes) < 1 || writeKeys[0] != deletes[len(deletes)-1] || !strings.Contains(writeKeys[0], "/objects/.eidonix-connector/probe/") {
+	if len(writeKeys) != 1 || len(deletes) < 1 || writeKeys[0] != deletes[len(deletes)-1] || !strings.Contains(writeKeys[0], "/test-bucket/.eidonix-connector/probe/") {
 		t.Fatalf("probe writes/deletes %v %v", writeKeys, deletes)
 	}
 }

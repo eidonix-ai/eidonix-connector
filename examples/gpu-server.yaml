@@ -1,73 +1,71 @@
 # What this machine shares through the Eidonix connector.
-name: Example GPU server              # for your own reference only
+site: example-gpu-site                # the connector's name in Eidonix Setup
 
 # The server this connector connects out to.
 upstream:
   url: https://connect.eidonix.com
   token: cxn_abcdefghijklmnop_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA   # placeholder; issued in Eidonix Setup
-  public_keys:                        # the upstream's signing keys; during a
-    - AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=   # rotation, list old and new
+  public-keys: [AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=]   # the upstream's signing keys; during a rotation, old and new
 
-# What this machine shares, by type. The connector reaches ONLY the urls
-# listed here, and accepts only the requests each type needs.
-# Every name must be unique in this file; it's what the upstream sees.
+access-log: /var/log/eidonix-connector/access.log   # one line per request; never contents
 
-chat:
-  - name: gpu1
-    url: http://10.0.0.33:8000
+# What this machine shares, by name. The connector reaches ONLY the addresses
+# listed here, and accepts only the requests each service allows.
+services:
+  gpu1:
+    address: 10.0.0.33:8000           # host:port = plain HTTP
+    allowed-endpoints: [POST /v1/*, GET /v1/models]
     models: [Qwen/Qwen3-32B]          # only these models may be used
-    max_concurrent_requests: 32
-    idle_timeout: 15m                 # stop a request that sends nothing for this long
-  - name: gpu2
-    url: http://10.0.0.34:8000
+    health: /health
+    max-concurrent-requests: 32
+    idle-timeout: 15m                 # stop a request that sends nothing for this long
+  gpu2:
+    address: 10.0.0.34:8000
+    allowed-endpoints: [POST /v1/*, GET /v1/models]
     models: [meta-llama/Llama-3.3-70B-Instruct]
-    max_concurrent_requests: 16
-  - name: chat-small                  # small chat model on the utility server
-    url: http://10.0.0.30:8004
+    health: /health
+    idle-timeout: 15m
+  chat-small:                         # small chat model on the utility server
+    address: 10.0.0.30:8004
+    allowed-endpoints: [POST /v1/*, GET /v1/models]
     models: [qwen-small]
-    max_concurrent_requests: 8
-    idle_timeout: 5m
-
-embeddings:
-  - name: embed
-    url: http://10.0.0.30:8001
-    api_path: /                       # this server's API is at / rather than /v1
+    health: /health
+    max-concurrent-requests: 8
+  ocr:                                # layout parsing (PDF/scan → text)
+    address: 10.0.0.30:8002
+    allowed-endpoints: [POST /layout-parsing]
+    health: /health
+  embed:
+    address: 10.0.0.30:8001
+    allowed-endpoints: [POST /embeddings]   # this server's API is at / rather than /v1
     models:
-      nomic-embed: nomic-ai/nomic-embed-text-v1.5   # name the upstream uses: name your server uses
-
-rerank:
-  - name: rerank-jina
-    url: http://10.0.0.30:8006
+      nomic-ai/nomic-embed-text-v1.5: {alias: nomic-embed}   # <name your server uses>: {alias: <name Eidonix uses>}
+    health: /health
+  rerank-jina:
+    address: 10.0.0.30:8006
+    allowed-endpoints: [POST /v1/rerank]
     models:
-      jina-reranker: jina-reranker-v3
-  - name: rerank-bge
-    url: http://10.0.0.30:8008
-    models: [bge-reranker]
-
-transcription:
-  - name: stt
-    url: http://10.0.0.30:8007
+      jina-reranker-v3: {alias: jina-reranker}
+    health: /health
+  stt:
+    address: 10.0.0.30:8007
+    allowed-endpoints: [POST /v1/audio/transcriptions]
     models:
-      whisper: /models/faster-whisper-large-v3-turbo
-
-speech:
-  - name: tts
-    url: http://10.0.0.30:8009
+      /models/faster-whisper-large-v3-turbo: {alias: whisper}
+    health: /health
+  tts:
+    address: 10.0.0.30:8009
+    allowed-endpoints: [POST /v1/audio/speech, GET /v1/audio/voices]
     models: [kokoro]
-
-image:
-  - name: image
-    url: http://10.0.0.30:8010
+    health: /health
+  image:
+    address: 10.0.0.30:8010
+    allowed-endpoints: [POST /v1/images/*]
     models: [qwen-image]
-    max_concurrent_requests: 1        # one image at a time on this card
-
-document:                             # layout parsing (PDF/scan → text)
-  - name: ocr
-    url: http://10.0.0.30:8002
-
-realtime:                             # live transcription
-  - name: voice-live
-    url: http://10.0.0.30:8011
-    max_concurrent_requests: 4
-
-access_log: /var/log/eidonix-connector/access.log   # one line per request; never contents
+    health: /health
+    max-concurrent-requests: 1        # one image at a time on this card
+  voice-live:                         # live transcription over a WebSocket
+    address: 10.0.0.30:8011
+    allowed-endpoints: [WEBSOCKET /v1/stream, GET /v1/config]
+    health: /health
+    max-concurrent-requests: 4

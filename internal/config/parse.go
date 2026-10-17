@@ -15,40 +15,25 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/eidonix-ai/eidonix-connector/internal/servicetype"
 	"github.com/eidonix-ai/eidonix-connector/protocol"
 	"gopkg.in/yaml.v3"
 )
 
 const (
 	MaxServices       = 256
-	MaxURLs           = 64
+	MaxEndpoints      = 64
 	MaxModels         = 64
 	MaxModelNameBytes = 200
-	MaxPaths          = 64
 )
 
 var (
-	topFields      = append(append([]string{"name", "upstream"}, protocol.ServiceTypes...), "access_log")
-	upstreamFields = []string{"url", "token", "public_keys", "proxy_url", "ca_certificate"}
-	limitFields    = []string{"max_concurrent_requests", "max_requests_per_minute", "idle_timeout", "api_key"}
-	storageFields  = []string{"name", "endpoint", "bucket", "prefix", "region", "access_key", "secret_key", "encryption", "encryption_key", "kms_key_id", "allow_http", "max_file_size", "max_read_per_hour", "max_concurrent_requests", "ca_certificate"}
+	topFields      = []string{"site", "upstream", "access-log", "services"}
+	upstreamFields = []string{"url", "token", "public-keys", "proxy", "ca-certificate"}
+	httpFields     = []string{"kind", "address", "allowed-endpoints", "models", "health", "api-key", "max-concurrent-requests", "max-requests-per-minute", "idle-timeout"}
+	s3Fields       = []string{"kind", "address", "bucket", "access-key", "secret-key", "region", "encryption", "encryption-key", "ca-certificate", "read-only", "max-file-size", "max-concurrent-requests"}
+	// v02Keys are top-level keys only a v0.2 file has.
+	v02Keys = []string{"name", "access_log", "chat", "anthropic", "embeddings", "rerank", "transcription", "speech", "image", "document", "conversion", "realtime", "storage", "custom"}
 )
-
-// serviceFields lists the settings a service of type t accepts.
-func serviceFields(t servicetype.Type) []string {
-	switch t.Name {
-	case protocol.TypeStorage:
-		return storageFields
-	case protocol.TypeCustom:
-		return append([]string{"name", "url", "urls", "paths"}, limitFields...)
-	}
-	f := []string{"name", "url", "urls", "api_path"}
-	if t.Models {
-		f = append(f, "models")
-	}
-	return append(f, limitFields...)
-}
 
 // lineError is a validation error tied to a line and, when known, a service.
 type lineError struct {
@@ -67,15 +52,36 @@ func at(n *yaml.Node, ctx, format string, args ...any) error {
 	return &lineError{n.Line, msg}
 }
 
+// isOldFormat reports whether a top-level mapping is a v0.2 file.
+func isOldFormat(root *yaml.Node) bool {
+	for i := 0; i+1 < len(root.Content); i += 2 {
+		k := root.Content[i].Value
+		for _, old := range v02Keys {
+			if k == old {
+				return true
+			}
+		}
+		if k == "upstream" && root.Content[i+1].Kind == yaml.MappingNode {
+			up := root.Content[i+1]
+			for j := 0; j+1 < len(up.Content); j += 2 {
+				switch up.Content[j].Value {
+				case "public_keys", "proxy_url", "ca_certificate":
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
 // Parse decodes and validates a configuration file's bytes. It never reads
 // other files: every secret is in the file itself.
 func Parse(data []byte) (*Config, error) {
 	var doc yaml.Node
 	dec := yaml.NewDecoder(bytes.NewReader(data))
-	dec.KnownFields(true)
 	if err := dec.Decode(&doc); err != nil {
 		if errors.Is(err, io.EOF) {
-			return nil, errors.New("the file is empty; it needs at least an upstream section")
+			return nil, errors.New("the file is empty; it needs at least site and upstream")
 		}
 		return nil, fmt.Errorf("not valid YAML: %v", strings.TrimPrefix(err.Error(), "yaml: "))
 	}
@@ -84,53 +90,64 @@ func Parse(data []byte) (*Config, error) {
 		return nil, errors.New("the file must contain exactly one YAML document")
 	}
 	if len(doc.Content) != 1 || doc.Content[0].Kind != yaml.MappingNode {
-		return nil, &lineError{doc.Line, "the file must be a set of settings (name, upstream, chat, …)"}
+		return nil, &lineError{doc.Line, "the file must be a set of settings (site, upstream, services, …)"}
 	}
-	fields, err := mapping(doc.Content[0], "", topFields)
+	root := doc.Content[0]
+	if isOldFormat(root) {
+		return nil, ErrOldFormat
+	}
+	fields, err := mapping(root, "", topFields)
 	if err != nil {
 		return nil, err
 	}
 	c := &Config{AccessLog: DefaultAccessLog}
-	if n := fields["name"]; n != nil {
-		if c.Name, err = text(n, "", "name"); err != nil {
-			return nil, err
-		}
+	site := fields["site"]
+	if site == nil {
+		return nil, &lineError{root.Line, "site is required: the connector's name in Eidonix Setup"}
+	}
+	if c.Site, err = line(site, "", "site"); err != nil {
+		return nil, err
+	}
+	if !protocol.ValidSiteName(c.Site) {
+		return nil, at(site, "", "site %q must be the connector's name in Eidonix Setup: 1-40 lowercase letters, digits or -, starting with a letter or digit", c.Site)
 	}
 	up := fields["upstream"]
 	if up == nil {
-		return nil, &lineError{doc.Content[0].Line, "upstream is required (url, token and public_keys from Eidonix Setup)"}
+		return nil, &lineError{root.Line, "upstream is required (url, token and public-keys from Eidonix Setup)"}
 	}
 	if c.Upstream, err = parseUpstream(up); err != nil {
 		return nil, err
 	}
-	if n := fields["access_log"]; n != nil {
-		if c.AccessLog, err = text(n, "", "access_log"); err != nil {
+	if n := fields["access-log"]; n != nil {
+		if c.AccessLog, err = text(n, "", "access-log"); err != nil {
 			return nil, err
 		}
 		if !filepath.IsAbs(c.AccessLog) {
-			return nil, at(n, "", "access_log must be an absolute path")
+			return nil, at(n, "", "access-log must be an absolute path")
 		}
 	}
-	names := map[string]Service{}
-	for _, typ := range servicetype.All() {
-		section := fields[typ.Name]
-		if section == nil || section.Tag == "!!null" {
-			continue
+	section := fields["services"]
+	if section == nil || section.Tag == "!!null" {
+		return c, nil
+	}
+	if section.Kind != yaml.MappingNode {
+		return nil, at(section, "", "services must be a set of services by name (name: then its settings)")
+	}
+	lines := map[string]int{}
+	for i := 0; i+1 < len(section.Content); i += 2 {
+		k, v := section.Content[i], section.Content[i+1]
+		if k.Kind != yaml.ScalarNode || !protocol.ValidServiceName(k.Value) {
+			return nil, at(k, "", "service name %q must be 1-40 lowercase letters, digits or -, starting with a letter or digit", k.Value)
 		}
-		if section.Kind != yaml.SequenceNode {
-			return nil, at(section, "", "%s must be a list of services (each starting with \"- name: …\")", typ.Name)
+		if prior, dup := lines[k.Value]; dup {
+			return nil, at(k, fmt.Sprintf("service %q", k.Value), "name already used on line %d; names must be unique in the file", prior)
 		}
-		for i, item := range section.Content {
-			s, err := parseService(typ, item, i+1)
-			if err != nil {
-				return nil, err
-			}
-			if prior, ok := names[s.Name]; ok {
-				return nil, at(item, fmt.Sprintf("%s service %q", typ.Name, s.Name), "name already used by the %s service on line %d; names must be unique in the file", prior.Type, prior.Line)
-			}
-			names[s.Name] = s
-			c.Services = append(c.Services, s)
+		lines[k.Value] = k.Line
+		s, err := parseService(k, v)
+		if err != nil {
+			return nil, err
 		}
+		c.Services = append(c.Services, s)
 	}
 	if len(c.Services) > MaxServices {
 		return nil, fmt.Errorf("at most %d services", MaxServices)
@@ -278,7 +295,7 @@ func parseUpstream(n *yaml.Node) (Upstream, error) {
 	if err != nil {
 		return u, err
 	}
-	for _, req := range []string{"url", "token", "public_keys"} {
+	for _, req := range []string{"url", "token", "public-keys"} {
 		if f[req] == nil {
 			return u, at(n, ctx, "%s is required", req)
 		}
@@ -295,9 +312,9 @@ func parseUpstream(n *yaml.Node) (Upstream, error) {
 	if _, _, e := protocol.ParseToken(u.Token); e != nil {
 		return u, at(f["token"], ctx, "token is not a connection token (cxn_…); paste the token shown in Eidonix Setup")
 	}
-	keys := f["public_keys"]
+	keys := f["public-keys"]
 	if keys.Kind != yaml.SequenceNode || len(keys.Content) < 1 || len(keys.Content) > 2 {
-		return u, at(keys, ctx, "public_keys must list one or two keys (two only during a key rotation)")
+		return u, at(keys, ctx, "public-keys must list one or two keys (two only during a key rotation)")
 	}
 	for _, k := range keys.Content {
 		v, err := line(k, ctx, "public key")
@@ -309,16 +326,16 @@ func parseUpstream(n *yaml.Node) (Upstream, error) {
 		}
 		u.PublicKeys = append(u.PublicKeys, v)
 	}
-	if n := f["proxy_url"]; n != nil {
-		if u.ProxyURL, err = line(n, ctx, "proxy_url"); err != nil {
+	if n := f["proxy"]; n != nil {
+		if u.Proxy, err = line(n, ctx, "proxy"); err != nil {
 			return u, err
 		}
-		p, e := url.Parse(u.ProxyURL)
+		p, e := url.Parse(u.Proxy)
 		if e != nil || (p.Scheme != "http" && p.Scheme != "https") || p.Hostname() == "" || (p.Path != "" && p.Path != "/") || p.RawQuery != "" || p.Fragment != "" || !validPort(p.Port()) {
-			return u, at(n, ctx, "proxy_url must be http://host:port or https://host:port")
+			return u, at(n, ctx, "proxy must be http://host:port or https://host:port")
 		}
 	}
-	if n := f["ca_certificate"]; n != nil {
+	if n := f["ca-certificate"]; n != nil {
 		if u.CACertificate, err = certificate(n, ctx); err != nil {
 			return u, err
 		}
@@ -326,12 +343,12 @@ func parseUpstream(n *yaml.Node) (Upstream, error) {
 	return u, nil
 }
 func certificate(n *yaml.Node, ctx string) (string, error) {
-	v, err := text(n, ctx, "ca_certificate")
+	v, err := text(n, ctx, "ca-certificate")
 	if err != nil {
 		return "", err
 	}
 	if !x509.NewCertPool().AppendCertsFromPEM([]byte(v)) {
-		return "", at(n, ctx, "ca_certificate must be a PEM certificate (-----BEGIN CERTIFICATE----- …)")
+		return "", at(n, ctx, "ca-certificate must be a PEM certificate (-----BEGIN CERTIFICATE----- …)")
 	}
 	return v, nil
 }
@@ -340,154 +357,152 @@ func validPort(p string) bool {
 		return true
 	}
 	v, err := strconv.Atoi(p)
-	return err == nil && v >= 1 && v <= 65535
+	return err == nil && v >= 1 && v <= 65535 && strconv.Itoa(v) == p
 }
 
-// serviceURL validates a service address: http or https, a host, an optional
-// port, and no path, query, fragment or credentials.
-func serviceURL(n *yaml.Node, ctx, field string) (string, error) {
-	v, err := line(n, ctx, field)
+// parseAddress reads a service address: host:port for plain HTTP, or
+// https://host[:port]. It returns the address as written and the URL dialed.
+func parseAddress(n *yaml.Node, ctx string) (string, string, error) {
+	v, err := line(n, ctx, "address")
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
-	p, e := url.Parse(v)
-	if e != nil || (p.Scheme != "http" && p.Scheme != "https") || p.Hostname() == "" || strings.Contains(p.Hostname(), "%") || p.User != nil || p.RawQuery != "" || p.Fragment != "" || p.Opaque != "" || !validPort(p.Port()) {
-		return "", at(n, ctx, "%s must be http://host:port or https://host:port", field)
+	bad := at(n, ctx, "address must be host:port (plain HTTP) or https://host:port, without a path")
+	if rest, ok := strings.CutPrefix(v, "https://"); ok {
+		p, e := url.Parse(v)
+		if e != nil || rest == "" || p.Hostname() == "" || strings.Contains(p.Hostname(), "%") || p.User != nil || p.RawQuery != "" || p.Fragment != "" || p.Opaque != "" || (p.Path != "" && p.Path != "/") || !validPort(p.Port()) || strings.HasSuffix(p.Host, ":") {
+			return "", "", bad
+		}
+		v = strings.TrimSuffix(v, "/")
+		return v, v, nil
 	}
-	if p.Path != "" && p.Path != "/" {
-		return "", at(n, ctx, "%s must not include a path; use api_path for a path prefix", field)
+	if strings.Contains(v, "://") {
+		return "", "", at(n, ctx, "address must be host:port (plain HTTP) or https://host:port; write %q without http://", strings.TrimPrefix(v, "http://"))
 	}
-	return strings.TrimSuffix(v, "/"), nil
+	host, port, e := net.SplitHostPort(v)
+	if e != nil || host == "" || port == "" || !validPort(port) || strings.ContainsAny(host, "%/@?#[] ") {
+		return "", "", bad
+	}
+	return v, "http://" + v, nil
 }
 
-func parseService(t servicetype.Type, n *yaml.Node, index int) (Service, error) {
-	s := Service{Type: t.Name, Line: n.Line}
-	ctx := fmt.Sprintf("%s service #%d", t.Name, index)
-	if n.Kind != yaml.MappingNode {
-		return s, at(n, ctx, "each service needs settings (name, url, …)")
+// fieldsOf returns the settings a service of kind accepts.
+func fieldsOf(kind string) []string {
+	if kind == KindS3 {
+		return s3Fields
 	}
-	// Read the name first so every later message names the service.
+	return httpFields
+}
+
+func parseService(k, n *yaml.Node) (Service, error) {
+	s := Service{Name: k.Value, Kind: KindHTTP, Line: k.Line, MaxConcurrentRequests: DefaultMaxConcurrentRequests, IdleTimeout: DefaultIdleTimeout}
+	ctx := fmt.Sprintf("service %q", s.Name)
+	if n.Kind != yaml.MappingNode {
+		return s, at(k, ctx, "needs settings (address, allowed-endpoints, …)")
+	}
 	for i := 0; i+1 < len(n.Content); i += 2 {
-		if n.Content[i].Value == "name" {
-			v := n.Content[i+1]
-			name, err := line(v, ctx, "name")
+		if n.Content[i].Value == "kind" {
+			v, err := line(n.Content[i+1], ctx, "kind")
 			if err != nil {
 				return s, err
 			}
-			if !protocol.ValidServiceName(name) {
-				return s, at(v, ctx, "name %q must be 1-40 lowercase letters, digits or -, starting with a letter or digit", name)
+			if v != KindHTTP && v != KindS3 {
+				return s, at(n.Content[i+1], ctx, "kind must be http (the default) or s3")
 			}
-			s.Name = name
-			ctx = fmt.Sprintf("%s service %q", t.Name, name)
+			s.Kind = v
 		}
 	}
-	f, err := mapping(n, ctx, serviceFields(t))
+	// A setting of the other kind gets a message that says so.
+	other := map[string]bool{}
+	for _, f := range fieldsOf(map[string]string{KindHTTP: KindS3, KindS3: KindHTTP}[s.Kind]) {
+		other[f] = true
+	}
+	for _, f := range fieldsOf(s.Kind) {
+		delete(other, f)
+	}
+	for i := 0; i+1 < len(n.Content); i += 2 {
+		key := n.Content[i]
+		if other[key.Value] {
+			if s.Kind == KindHTTP {
+				return s, at(key, ctx, "%s is a setting of s3 services; add kind: s3 for a storage service", key.Value)
+			}
+			return s, at(key, ctx, "%s is not used by s3 services", key.Value)
+		}
+	}
+	f, err := mapping(n, ctx, fieldsOf(s.Kind))
 	if err != nil {
 		return s, err
 	}
-	if s.Name == "" {
-		return s, at(n, ctx, "name is required")
+	if f["address"] == nil {
+		return s, at(k, ctx, "address is required (where the service runs, e.g. 10.0.0.5:8000 or https://host:8443)")
 	}
-	s.MaxConcurrentRequests = t.MaxConcurrent
-	s.IdleTimeout = t.Idle
-	if t.Name == protocol.TypeStorage {
-		return s, parseStorage(&s, f, n, ctx)
+	if s.Address, s.URL, err = parseAddress(f["address"], ctx); err != nil {
+		return s, err
 	}
-	switch {
-	case f["url"] != nil && f["urls"] != nil:
-		return s, at(f["urls"], ctx, "set url or urls, not both")
-	case f["url"] != nil:
-		v, err := serviceURL(f["url"], ctx, "url")
+	if v := f["max-concurrent-requests"]; v != nil {
+		limit := 10000
+		if s.Kind == KindS3 {
+			limit = 256
+		}
+		if s.MaxConcurrentRequests, err = integer(v, ctx, "max-concurrent-requests", 1, limit); err != nil {
+			return s, err
+		}
+	}
+	if s.Kind == KindS3 {
+		return s, parseStorage(&s, f, k, ctx)
+	}
+	list := f["allowed-endpoints"]
+	if list == nil {
+		return s, at(k, ctx, "allowed-endpoints is required: list the requests allowed, e.g. [POST /v1/*, GET /v1/models]")
+	}
+	if list.Kind != yaml.SequenceNode || len(list.Content) == 0 || len(list.Content) > MaxEndpoints {
+		return s, at(list, ctx, "allowed-endpoints must list 1 to %d requests, e.g. [POST /v1/*, GET /v1/models]", MaxEndpoints)
+	}
+	seen := map[Endpoint]bool{}
+	for _, item := range list.Content {
+		entry, err := line(item, ctx, "allowed-endpoints entry")
 		if err != nil {
 			return s, err
 		}
-		s.URLs = []string{v}
-	case f["urls"] != nil:
-		list := f["urls"]
-		if list.Kind != yaml.SequenceNode || len(list.Content) == 0 || len(list.Content) > MaxURLs {
-			return s, at(list, ctx, "urls must list 1 to %d addresses", MaxURLs)
+		e, perr := ParseEndpoint(entry)
+		if perr != nil {
+			return s, at(item, ctx, "allowed-endpoints entry %v", perr)
 		}
-		for _, item := range list.Content {
-			v, err := serviceURL(item, ctx, "urls entry")
-			if err != nil {
-				return s, err
-			}
-			s.URLs = append(s.URLs, v)
+		if seen[e] {
+			return s, at(item, ctx, "allowed-endpoints lists %s twice", e)
 		}
-	default:
-		return s, at(n, ctx, "url is required (where the service runs, e.g. http://10.0.0.5:8000)")
+		seen[e] = true
+		s.Endpoints = append(s.Endpoints, e)
 	}
-	if v := f["api_path"]; v != nil {
-		p, err := line(v, ctx, "api_path")
-		if err != nil {
-			return s, err
-		}
-		if p != "/" && (servicetype.ValidatePath(p) != nil || strings.HasSuffix(p, "/")) {
-			return s, at(v, ctx, "api_path must be / or a path such as /api/v1 (no trailing /)")
-		}
-		s.APIPath = p
-	}
-	if t.Models {
-		v := f["models"]
-		if v == nil {
-			return s, at(n, ctx, "models is required: list the model names that may be used, or write models: any")
-		}
+	if v := f["models"]; v != nil {
 		if s.Models, err = parseModels(v, ctx); err != nil {
 			return s, err
 		}
 	}
-	if t.Name == protocol.TypeCustom {
-		v := f["paths"]
-		if v == nil || v.Kind != yaml.SequenceNode || len(v.Content) == 0 || len(v.Content) > MaxPaths {
-			node := n
-			if v != nil {
-				node = v
-			}
-			return s, at(node, ctx, "paths is required: list the exact requests allowed, e.g. [\"POST /v1/run\"]")
+	if v := f["health"]; v != nil {
+		if s.Health, err = line(v, ctx, "health"); err != nil {
+			return s, err
 		}
-		seen := map[servicetype.Request]bool{}
-		for _, item := range v.Content {
-			entry, err := line(item, ctx, "paths entry")
-			if err != nil {
-				return s, err
-			}
-			r, e := servicetype.ParseRequest(entry)
-			if e != nil {
-				return s, at(item, ctx, "paths entry %v", e)
-			}
-			if seen[r] {
-				return s, at(item, ctx, "paths lists %s twice", r)
-			}
-			seen[r] = true
-			s.Paths = append(s.Paths, r)
+		if ValidatePath(s.Health) != nil {
+			return s, at(v, ctx, "health must be a path such as /health")
 		}
 	}
-	return s, parseLimits(&s, f, ctx, 10000)
-}
-
-func parseLimits(s *Service, f map[string]*yaml.Node, ctx string, maxConcurrent int) error {
-	var err error
-	if v := f["max_concurrent_requests"]; v != nil {
-		if s.MaxConcurrentRequests, err = integer(v, ctx, "max_concurrent_requests", 1, maxConcurrent); err != nil {
-			return err
+	if v := f["max-requests-per-minute"]; v != nil {
+		if s.MaxRequestsPerMinute, err = integer(v, ctx, "max-requests-per-minute", 1, 1000000); err != nil {
+			return s, err
 		}
 	}
-	if v := f["max_requests_per_minute"]; v != nil {
-		if s.MaxRequestsPerMinute, err = integer(v, ctx, "max_requests_per_minute", 0, 1000000); err != nil {
-			return err
+	if v := f["idle-timeout"]; v != nil {
+		if s.IdleTimeout, err = duration(v, ctx, "idle-timeout"); err != nil {
+			return s, err
 		}
 	}
-	if v := f["idle_timeout"]; v != nil {
-		if s.IdleTimeout, err = duration(v, ctx, "idle_timeout"); err != nil {
-			return err
+	if v := f["api-key"]; v != nil {
+		if s.APIKey, err = line(v, ctx, "api-key"); err != nil {
+			return s, err
 		}
 	}
-	if v := f["api_key"]; v != nil {
-		if s.APIKey, err = line(v, ctx, "api_key"); err != nil {
-			return err
-		}
-	}
-	return nil
+	return s, nil
 }
 
 func modelName(n *yaml.Node, ctx string) (string, error) {
@@ -506,12 +521,13 @@ func modelName(n *yaml.Node, ctx string) (string, error) {
 	return v, nil
 }
 
-// parseModels reads `any`, a list of names, or a map of name: server-name.
+// parseModels reads a list of names, or a map of <name on the server>:
+// {alias: <name Cletus uses>} (alias optional).
 func parseModels(n *yaml.Node, ctx string) (Models, error) {
 	m := Models{Target: map[string]string{}}
 	add := func(item *yaml.Node, name, target string) error {
 		if _, dup := m.Target[name]; dup {
-			return at(item, ctx, "models lists %q twice", name)
+			return at(item, ctx, "models uses the name %q twice", name)
 		}
 		m.Names = append(m.Names, name)
 		m.Target[name] = target
@@ -519,8 +535,8 @@ func parseModels(n *yaml.Node, ctx string) (Models, error) {
 	}
 	switch n.Kind {
 	case yaml.ScalarNode:
-		if n.Value == "any" && n.Tag == "!!str" {
-			return Models{Any: true}, nil
+		if n.Value == "any" {
+			return m, at(n, ctx, "models: any is gone in v0.3; leave models out and request bodies are not inspected")
 		}
 	case yaml.SequenceNode:
 		for _, item := range n.Content {
@@ -534,21 +550,34 @@ func parseModels(n *yaml.Node, ctx string) (Models, error) {
 		}
 	case yaml.MappingNode:
 		for i := 0; i+1 < len(n.Content); i += 2 {
-			name, err := modelName(n.Content[i], ctx)
+			server, err := modelName(n.Content[i], ctx)
 			if err != nil {
 				return m, err
 			}
-			target, err := modelName(n.Content[i+1], ctx)
-			if err != nil {
-				return m, err
+			name := server
+			v := n.Content[i+1]
+			switch {
+			case v.Kind == yaml.ScalarNode && v.Tag == "!!null":
+			case v.Kind == yaml.MappingNode:
+				f, err := mapping(v, ctx+" model "+strconv.Quote(server), []string{"alias"})
+				if err != nil {
+					return m, err
+				}
+				if a := f["alias"]; a != nil {
+					if name, err = modelName(a, ctx); err != nil {
+						return m, err
+					}
+				}
+			default:
+				return m, at(v, ctx, "model %q: expected {alias: <name Cletus uses>}, found %s", server, describe(v))
 			}
-			if err := add(n.Content[i], name, target); err != nil {
+			if err := add(n.Content[i], name, server); err != nil {
 				return m, err
 			}
 		}
 	}
 	if len(m.Names) == 0 || len(m.Names) > MaxModels {
-		return m, at(n, ctx, "models must be a list of 1 to %d names ([a, b]), name: server-name pairs, or any", MaxModels)
+		return m, at(n, ctx, "models must be a list of 1 to %d names ([a, b]) or <name on the server>: {alias: <name Cletus uses>} entries", MaxModels)
 	}
 	return m, nil
 }

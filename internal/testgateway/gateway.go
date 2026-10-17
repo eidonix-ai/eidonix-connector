@@ -1,4 +1,4 @@
-// Package testgateway provides a development peer (protocol v2) for connector integration tests.
+// Package testgateway provides a development peer (protocol v3) for connector integration tests.
 // It is deliberately not a production gateway or a tenant authorization service.
 package testgateway
 
@@ -36,6 +36,9 @@ type Gateway struct {
 	AuthAttempts atomic.Int64
 	// Caller metadata stamped on every stream header this gateway opens.
 	OrgID, OrgSlug, UserKeyID string
+	// Site, when set, is the connector's name: a hello naming another site
+	// is closed with reason site_mismatch, as the real gateway does.
+	Site string
 }
 type peer struct {
 	mux          *yamux.Session
@@ -208,6 +211,10 @@ func (g *Gateway) connect(w http.ResponseWriter, r *http.Request) {
 	if env, err = protocol.ReadMessage(br); err != nil || env.Type != protocol.MessageHello || env.Decode(&hello) != nil || hello.InstanceID != instance || len(hello.Services) > 128 {
 		return
 	}
+	if !protocol.ValidSiteName(hello.Site) || g.Site != "" && hello.Site != g.Site {
+		protocol.WriteMessage(control, protocol.Control{V: protocol.Version, Type: protocol.MessageClose, Reason: "site_mismatch"})
+		return
+	}
 	p := &peer{mux: mux, services: make(map[string]protocol.Service), slots: make(chan struct{}, 64), capabilities: make(map[string]bool)}
 	for _, capability := range hello.Capabilities {
 		p.capabilities[capability] = true
@@ -221,7 +228,11 @@ func (g *Gateway) connect(w http.ResponseWriter, r *http.Request) {
 		if _, ok := p.services[service.Name]; ok {
 			return
 		}
-		if service.Type == protocol.TypeStorage && !p.capabilities[protocol.CapabilityStorage] {
+		if service.Kind != protocol.KindHTTP && service.Kind != protocol.KindS3 {
+			rejected = append(rejected, protocol.Rejected{Name: service.Name, Reason: "unknown_kind"})
+			continue
+		}
+		if service.Kind == protocol.KindS3 && !p.capabilities[protocol.CapabilityStorage] {
 			rejected = append(rejected, protocol.Rejected{Name: service.Name, Reason: "storage_capability_missing"})
 			continue
 		}
@@ -302,10 +313,10 @@ func (g *Gateway) openHeader(ctx context.Context, header protocol.StreamHeader) 
 	var chosen *peer
 	for p := range g.sessions {
 		if r, ok := p.services[header.Service]; ok && !p.mux.IsClosed() {
-			if header.Kind == "storage" && (r.Type != protocol.TypeStorage || !p.capabilities[protocol.CapabilityStorage]) {
+			if header.Kind == "storage" && (r.Kind != protocol.KindS3 || !p.capabilities[protocol.CapabilityStorage]) {
 				continue
 			}
-			if header.Kind != "storage" && r.Type == protocol.TypeStorage {
+			if header.Kind != "storage" && r.Kind == protocol.KindS3 {
 				continue
 			}
 			if chosen == nil || len(p.slots) < len(chosen.slots) {

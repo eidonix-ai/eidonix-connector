@@ -1,0 +1,66 @@
+# Placeholder v0.2 file shaped like a GPU site's production file.
+name: Example GPU site
+upstream:
+  url: https://connect.example.com
+  token: cxn_abcdefghijklmnop_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+  public_keys:
+    - AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+
+chat:
+  - name: glm
+    url: http://192.0.2.33:8000
+    models: [GLM-5.3-Flash-NVFP4]
+    max_concurrent_requests: 32
+    idle_timeout: 15m
+  - name: qwen-next
+    url: http://192.0.2.34:8000
+    models: [Qwen3.8-Flash-Next]
+    max_concurrent_requests: 16
+  - name: qwen-chat
+    url: http://192.0.2.30:8004
+    models: [qwen3.5-9b-vision]
+    max_concurrent_requests: 8
+    idle_timeout: 5m
+
+document:
+  - name: paddle-ocr
+    url: http://192.0.2.30:8002
+
+embeddings:
+  - name: nomic-embed
+    url: http://192.0.2.30:8001
+    api_path: /
+    models:
+      nomic-embed: nomic-ai/nomic-embed-text-v1.5
+
+rerank:
+  - name: jina-rerank
+    url: http://192.0.2.30:8006
+    models:
+      jina-reranker: jina-reranker-v3
+  - name: bge-rerank
+    url: http://192.0.2.30:8008
+    models:
+      bge-reranker: bge-reranker-v2-m3-Q8_0.gguf
+
+transcription:
+  - name: whisper
+    url: http://192.0.2.30:8007
+    models:
+      whisper: /models/faster-whisper-large-v3-turbo
+
+speech:
+  - name: kokoro
+    url: http://192.0.2.30:8009
+    models: [kokoro]
+
+image:
+  - name: qwen-image
+    url: http://192.0.2.30:8010
+    models: [qwen-image-2.1]
+    max_concurrent_requests: 1
+
+realtime:
+  - name: vibevoice
+    url: http://192.0.2.30:8011
+    max_concurrent_requests: 4

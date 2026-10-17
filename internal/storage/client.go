@@ -1,4 +1,5 @@
-// Package storage exposes only confined object operations using local credentials.
+// Package storage exposes only confined object operations on one bucket
+// using local credentials.
 package storage
 
 import (
@@ -33,7 +34,7 @@ type AuditEntry struct {
 	Origin           string    `json:"origin"`
 	Session          string    `json:"session"`
 	Service          string    `json:"service"`
-	Type             string    `json:"type"`
+	Kind             string    `json:"kind"`
 	Op               string    `json:"op"`
 	KeyHash          string    `json:"key_hash"`
 	Status           string    `json:"status"`
@@ -63,8 +64,6 @@ type Handler struct {
 	inflight            int
 	tokens              float64
 	last                time.Time
-	reads               int64
-	hour                time.Time
 	healthy             bool
 	cancel              context.CancelFunc
 	start               sync.Once
@@ -83,7 +82,7 @@ func New(ctx context.Context, svc config.Service, audit func(AuditEntry)) (*Hand
 }
 func newHandler(ctx context.Context, name string, maxConcurrent int, cfg config.Storage, accessKey, secretKey string, key []byte, audit func(AuditEntry)) (*Handler, error) {
 	u, e := url.Parse(cfg.Endpoint)
-	if e != nil || u.Hostname() == "" || u.Scheme != "https" && u.Scheme != "http" || cfg.Encryption == "sse-c" && u.Scheme != "https" || u.Scheme == "http" && !cfg.AllowHTTP {
+	if e != nil || u.Hostname() == "" || u.Scheme != "https" && u.Scheme != "http" || cfg.Encryption == "sse-c" && u.Scheme != "https" {
 		return nil, errors.New("invalid storage endpoint")
 	}
 	if maxConcurrent < 1 {
@@ -126,8 +125,6 @@ func newHandler(ctx context.Context, name string, maxConcurrent int, cfg config.
 		sse, e = encrypt.NewSSEC(key)
 	case "sse-s3":
 		sse = encrypt.NewSSE()
-	case "sse-kms":
-		sse, e = encrypt.NewSSEKMS(cfg.KMSKeyID, nil)
 	}
 	if e != nil {
 		return nil, e
@@ -149,7 +146,7 @@ func newHandler(ctx context.Context, name string, maxConcurrent int, cfg config.
 		cfg.MaxOpsPerSecond = config.DefaultStorageOps
 	}
 	auditHash := sha256.Sum256([]byte("cletus-storage-audit-v1\x00" + secretKey))
-	h := &Handler{name: name, maxConcurrent: maxConcurrent, cfg: cfg, core: c, sse: sse, policy: p, transport: t, audit: audit, auditKey: auditHash[:], max: max, part: part, idle: idle, lifetime: life, age: age, active: map[string]bool{}, tokens: math.Max(1, cfg.MaxOpsPerSecond), last: time.Now(), hour: time.Now()}
+	h := &Handler{name: name, maxConcurrent: maxConcurrent, cfg: cfg, core: c, sse: sse, policy: p, transport: t, audit: audit, auditKey: auditHash[:], max: max, part: part, idle: idle, lifetime: life, age: age, active: map[string]bool{}, tokens: math.Max(1, cfg.MaxOpsPerSecond), last: time.Now()}
 	return h, nil
 }
 func (h *Handler) Healthy() bool { h.mu.Lock(); defer h.mu.Unlock(); return h.healthy }
@@ -173,7 +170,7 @@ func (h *Handler) record(a AuditEntry) {
 	if h.audit != nil {
 		a.Time = time.Now().UTC()
 		a.Service = h.name
-		a.Type = protocol.TypeStorage
+		a.Kind = protocol.KindS3
 		h.audit(a)
 	}
 }
@@ -194,20 +191,6 @@ func (h *Handler) reserve() string {
 	return ""
 }
 func (h *Handler) release() { h.mu.Lock(); h.inflight--; h.mu.Unlock() }
-func (h *Handler) readBudget(n int64) bool {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	now := time.Now()
-	if now.Sub(h.hour) >= time.Hour {
-		h.hour = now
-		h.reads = 0
-	}
-	if h.cfg.MaxReadPerHour > 0 && n > h.cfg.MaxReadPerHour-h.reads {
-		return false
-	}
-	h.reads += n
-	return true
-}
 
 var errBackendInvalid = errors.New("backend response outside limits")
 
@@ -336,7 +319,7 @@ func (b *limitedBody) Read(p []byte) (int, error) {
 func (b *limitedBody) Close() error { b.finish(); return b.ReadCloser.Close() }
 func (h *Handler) warnings() {
 	if strings.HasPrefix(h.cfg.Endpoint, "http:") {
-		log.Printf("storage service %s uses http (allow_http is set)", h.name)
+		log.Printf("storage service %s uses plain http (its address has no https://)", h.name)
 	}
 	if h.cfg.Encryption == "none" {
 		log.Printf("storage service %s stores files without encryption (encryption: none)", h.name)

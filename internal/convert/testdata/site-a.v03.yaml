@@ -1,0 +1,84 @@
+# Converted to v0.3 by eidonix-connector convert.
+# Review the notes it printed, then run: eidonix-connector check
+
+site: example-gpu-site
+upstream:
+  url: https://connect.example.com
+  token: cxn_abcdefghijklmnop_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+  public-keys: [AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=]
+services:
+  glm: # was chat
+    address: 192.0.2.33:8000
+    allowed-endpoints: [POST /v1/*, GET /v1/models]
+    models: [GLM-5.3-Flash-NVFP4]
+    health: /health
+    max-concurrent-requests: 32
+    idle-timeout: 15m
+  qwen-next: # was chat
+    address: 192.0.2.34:8000
+    allowed-endpoints: [POST /v1/*, GET /v1/models]
+    models: [Qwen3.8-Flash-Next]
+    health: /health
+    idle-timeout: 15m
+  qwen-chat: # was chat
+    address: 192.0.2.30:8004
+    allowed-endpoints: [POST /v1/*, GET /v1/models]
+    models: [qwen3.5-9b-vision]
+    health: /health
+    max-concurrent-requests: 8
+  paddle-ocr: # was document
+    address: 192.0.2.30:8002
+    allowed-endpoints: [POST /layout-parsing]
+    health: /health
+    max-concurrent-requests: 4
+    idle-timeout: 10m
+  nomic-embed: # was embeddings
+    address: 192.0.2.30:8001
+    allowed-endpoints: [POST /embeddings]
+    models:
+      nomic-ai/nomic-embed-text-v1.5: {alias: nomic-embed}
+    health: /health
+    max-concurrent-requests: 32
+    idle-timeout: 2m
+  jina-rerank: # was rerank
+    address: 192.0.2.30:8006
+    allowed-endpoints: [POST /v1/rerank]
+    models:
+      jina-reranker-v3: {alias: jina-reranker}
+    health: /health
+    max-concurrent-requests: 32
+    idle-timeout: 2m
+  bge-rerank: # was rerank
+    address: 192.0.2.30:8008
+    allowed-endpoints: [POST /v1/rerank]
+    models:
+      bge-reranker-v2-m3-Q8_0.gguf: {alias: bge-reranker}
+    health: /health
+    max-concurrent-requests: 32
+    idle-timeout: 2m
+  whisper: # was transcription
+    address: 192.0.2.30:8007
+    allowed-endpoints: [POST /v1/audio/transcriptions]
+    models:
+      /models/faster-whisper-large-v3-turbo: {alias: whisper}
+    health: /health
+    max-concurrent-requests: 8
+  kokoro: # was speech
+    address: 192.0.2.30:8009
+    allowed-endpoints: [POST /v1/audio/speech, GET /v1/audio/voices]
+    models: [kokoro]
+    health: /health
+    max-concurrent-requests: 8
+    idle-timeout: 2m
+  qwen-image: # was image
+    address: 192.0.2.30:8010
+    allowed-endpoints: [POST /v1/images/*]
+    models: [qwen-image-2.1]
+    health: /health
+    max-concurrent-requests: 1
+    idle-timeout: 10m
+  vibevoice: # was realtime
+    address: 192.0.2.30:8011
+    allowed-endpoints: [WEBSOCKET /v1/stream, GET /v1/config]
+    health: /health
+    max-concurrent-requests: 4

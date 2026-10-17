@@ -28,7 +28,7 @@ func TestHeaderTimeoutUsesConfiguredIdle(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer x.Close()
-	tr := x.services["chat"].upstreams[0].client.Transport.(*http.Transport)
+	tr := x.services["chat"].client.Transport.(*http.Transport)
 	if tr.ResponseHeaderTimeout != 600*time.Second {
 		t.Fatalf("timeout %v", tr.ResponseHeaderTimeout)
 	}
@@ -48,7 +48,7 @@ func TestIdleBeforeResponseHeadersReturns504(t *testing.T) {
 		t.Fatalf("got %d %v", resp.StatusCode, resp.Header)
 	}
 }
-func Test500DoesNotEjectSingleUpstream(t *testing.T) {
+func Test500DoesNotMarkUnhealthy(t *testing.T) {
 	var count atomic.Int64
 	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { count.Add(1); w.WriteHeader(500) }))
 	defer s.Close()
@@ -63,24 +63,8 @@ func Test500DoesNotEjectSingleUpstream(t *testing.T) {
 			t.Fatalf("request %d: %d", i, resp.StatusCode)
 		}
 	}
-	if count.Load() != 2 || !x.StatusServices()[0].Healthy {
-		t.Fatal("500 ejected upstream")
-	}
-	r := x.services["chat"]
-	u := r.upstreams[0]
-	r.flight++
-	u.flight++
-	x.release(r, u, true)
-	if !u.eject.IsZero() {
-		t.Fatal("last healthy upstream ejected")
-	}
-	other := &upstream{client: &http.Client{}}
-	r.upstreams = append(r.upstreams, other)
-	r.flight++
-	u.flight++
-	x.release(r, u, true)
-	if u.eject.IsZero() {
-		t.Fatal("bad upstream not ejected with healthy alternative")
+	if count.Load() != 2 || !x.StatusServices()[0].Healthy || !x.services["chat"].eject.IsZero() {
+		t.Fatal("500 marked the service unhealthy")
 	}
 }
 func TestResponseTrailersAndModelQueriesDropped(t *testing.T) {
@@ -248,7 +232,7 @@ func FuzzHTTPStreamParser(f *testing.F) {
 		f.Fatal(err)
 	}
 	defer x.Close()
-	x.services["chat"].upstreams[0].client.Transport = parserTransport{}
+	x.services["chat"].client.Transport = parserTransport{}
 	f.Fuzz(func(t *testing.T, data []byte) {
 		if len(data) > 65536 {
 			t.Skip()

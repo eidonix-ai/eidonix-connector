@@ -1,0 +1,5 @@
+name "Example GPU site" not carried; the connector is now known by its site, example-gpu-site
+glm: POST /v1/* allows every POST under /v1 (v0.2 allowed only chat/completions and responses)
+qwen-next: POST /v1/* allows every POST under /v1 (v0.2 allowed only chat/completions and responses)
+qwen-chat: POST /v1/* allows every POST under /v1 (v0.2 allowed only chat/completions and responses)
+nomic-embed: api_path / is now part of the paths (POST /embeddings); point Eidonix at the new path

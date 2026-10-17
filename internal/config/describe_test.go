@@ -31,10 +31,14 @@ func TestTemplateIsTheExample(t *testing.T) {
 		t.Fatal("examples/connector.yaml differs from config.Template")
 	}
 	_, err := Parse([]byte(Template))
+	if err == nil || !strings.Contains(err.Error(), `site "PASTE_CONNECTOR_NAME_FROM_SETUP" must be the connector's name`) {
+		t.Fatal(err)
+	}
+	_, err = Parse([]byte(strings.Replace(Template, "PASTE_CONNECTOR_NAME_FROM_SETUP", "example-site", 1)))
 	if err == nil || !strings.Contains(err.Error(), "upstream: token is not a connection token") {
 		t.Fatal(err)
 	}
-	filled := strings.Replace(strings.Replace(Template, "PASTE_TOKEN_FROM_SETUP", testToken, 1), "PASTE_KEY_FROM_SETUP", testKey, 1)
+	filled := strings.NewReplacer("PASTE_CONNECTOR_NAME_FROM_SETUP", "example-site", "PASTE_TOKEN_FROM_SETUP", testToken, "PASTE_KEY_FROM_SETUP", testKey).Replace(Template)
 	c, err := Parse([]byte(filled))
 	if err != nil || len(c.Services) != 0 || c.AccessLog != DefaultAccessLog {
 		t.Fatal(c, err)
@@ -57,19 +61,31 @@ func TestDescribeGolden(t *testing.T) {
 		t.Fatalf("check output differs:\n%s", got)
 	}
 }
+// TestExamplesParse: every example file is a valid configuration.
+func TestExamplesParse(t *testing.T) {
+	for _, name := range []string{"gpu-server.yaml", "plant-site.yaml"} {
+		data, err := os.ReadFile("../../examples/" + name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Parse(data); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+	}
+}
 func TestDescribeStorageAndEmpty(t *testing.T) {
-	c, err := parse(t, "storage:\n  - name: files\n    endpoint: http://10.0.0.9:9000\n    allow_http: true\n    bucket: cletus\n    prefix: cletus/\n    access_key: a\n    secret_key: s\n    encryption: none\n")
+	c, err := parse(t, "services:\n  files:\n    kind: s3\n    address: 192.0.2.9:9000\n    bucket: cletus\n    access-key: a\n    secret-key: s\n    read-only: true\n")
 	if err != nil {
 		t.Fatal(err)
 	}
 	got := c.Describe()
-	for _, want := range []string{"Shares 1 service and can reach only this machine:", "storage  files  10.0.0.9:9000  bucket cletus, folder cletus/; files are stored without encryption", "Secrets set: token, access_key (files), secret_key (files)."} {
+	for _, want := range []string{"Site test-site", "Shares 1 service and can reach only this machine:", "files  s3  192.0.2.9:9000  bucket cletus; files are stored without encryption   read-only   max concurrent: 16", "Secrets set: token, access-key (files), secret-key (files)."} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("missing %q in:\n%s", want, got)
 		}
 	}
 	c, _ = parse(t, "")
-	if got := c.Describe(); !strings.Contains(got, "Shares no services") || !strings.Contains(got, "Not shared: chat, anthropic") {
+	if got := c.Describe(); !strings.Contains(got, "Shares no services") {
 		t.Fatal(got)
 	}
 }
@@ -78,19 +94,19 @@ func TestDescribeStorageAndEmpty(t *testing.T) {
 func TestRedacted(t *testing.T) {
 	secrets := []string{testToken, "sk-SECRET-api", "AKIA-SECRET-access", "SECRET-secret-key", testKey}
 	src := upstreamYAML() + `# a comment that must survive
-chat:
-  - name: gpu1
-    url: http://10.0.0.5:8000
-    models: [a]
-    api_key: sk-SECRET-api   # line comment
-storage:
-  - name: files
-    endpoint: https://s3.example.com
+services:
+  gpu1:
+    address: 192.0.2.5:8000
+    allowed-endpoints: [POST /v1/*]
+    api-key: sk-SECRET-api   # line comment
+  files:
+    kind: s3
+    address: https://s3.example.com
     bucket: cletus
-    prefix: cletus/
-    access_key: AKIA-SECRET-access
-    secret_key: "SECRET-secret-key"
-    encryption_key: ` + testKey + `
+    access-key: AKIA-SECRET-access
+    secret-key: "SECRET-secret-key"
+    encryption: sse-c
+    encryption-key: ` + testKey + `
 `
 	if _, err := Parse([]byte(src)); err != nil {
 		t.Fatal(err)
@@ -104,15 +120,15 @@ storage:
 			t.Fatalf("secret %q in redacted output:\n%s", s, out)
 		}
 	}
-	if strings.Contains(string(out), "encryption_key: "+testKey) {
+	if strings.Contains(string(out), "encryption-key: "+testKey) {
 		t.Fatal("encryption key shown")
 	}
-	for _, want := range []string{"# a comment that must survive", "# line comment", "token: " + Redacted, "api_key: " + Redacted, "secret_key: " + Redacted, "public_keys: [" + testKey + "]", "url: http://10.0.0.5:8000"} {
+	for _, want := range []string{"# a comment that must survive", "# line comment", "token: " + Redacted, "api-key: " + Redacted, "secret-key: " + Redacted, "public-keys: [" + testKey + "]", "address: 192.0.2.5:8000"} {
 		if !strings.Contains(string(out), want) {
 			t.Fatalf("missing %q:\n%s", want, out)
 		}
 	}
-	proxied, _ := Redact([]byte("upstream:\n  proxy_url: http://user:PROXY-SECRET@proxy.example.com:3128\n"))
+	proxied, _ := Redact([]byte("upstream:\n  proxy: http://user:PROXY-SECRET@proxy.example.com:3128\n"))
 	if strings.Contains(string(proxied), "PROXY-SECRET") {
 		t.Fatal(string(proxied))
 	}

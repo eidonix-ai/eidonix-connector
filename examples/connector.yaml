@@ -1,62 +1,51 @@
 # What this machine shares through the Eidonix connector.
-# name: My GPU server                 # for your own reference only
+site: PASTE_CONNECTOR_NAME_FROM_SETUP   # must match the connector's name in Eidonix Setup
 
 # The server this connector connects out to.
 upstream:
   url: https://connect.eidonix.com
   token: PASTE_TOKEN_FROM_SETUP
-  public_keys:
-    - PASTE_KEY_FROM_SETUP
-  # proxy_url: http://proxy:3128      # only if your network requires a web proxy
-  # ca_certificate: |                 # only if your network uses its own certificate
+  public-keys: [PASTE_KEY_FROM_SETUP]   # during a key rotation, list old and new
+  # proxy: http://proxy:3128            # only if your network requires a web proxy
+  # ca-certificate: |                   # only if your network inspects TLS with its own certificate
   #   -----BEGIN CERTIFICATE-----
   #   …
   #   -----END CERTIFICATE-----
 
-# Fill in the types you share; leave the rest empty or delete them.
-# Each service: a unique name, the url where it runs, and optional limits.
-# The connector reaches ONLY the urls listed here, and accepts only the
-# requests each type needs.
+# access-log: /var/log/eidonix-connector/access.log   # default; one line per request, never contents
 
-# chat:                               # OpenAI-compatible chat (vLLM, SGLang, llama.cpp, …)
-#   - name: my-chat
-#     url: http://host:8000
-#     models: [model-name]            # only these models; `any` to allow all
-#     max_concurrent_requests: 32     # default
-#     idle_timeout: 15m               # default
-#     # max_requests_per_minute: 600  # optional rate limit
-#     # api_key: sk-…                 # only if the server needs a key
-#     # api_path: /                   # only if the server's API is not under /v1
+# The services this machine shares, by name (lowercase letters, digits and -,
+# unique in this file). The connector reaches ONLY the addresses listed here,
+# and accepts only the requests each service's allowed-endpoints lists.
+services:
+  # my-chat:
+  #   address: 10.0.0.5:8000              # host:port = plain HTTP; https://host:port for TLS
+  #   allowed-endpoints:                  # METHOD /path; a final /* matches everything below it
+  #     - POST /v1/*                      #   methods: GET, POST, PUT, DELETE, WEBSOCKET
+  #     - GET /v1/models
+  #   models: [model-name]                # optional: only these models; without it bodies are not inspected
+  #   # models:                           # or rename: <name on the server>: {alias: <name Cletus uses>}
+  #   #   org/model-name: {alias: model}
+  #   health: /health                     # optional: GET every 15 s; without it, reachability only
+  #   # api-key: sk-…                     # only if the server needs a key (sent as Authorization: Bearer)
+  #   # max-concurrent-requests: 16       # default
+  #   # max-requests-per-minute: 600      # default: no limit
+  #   # idle-timeout: 5m                  # how long a reply may go quiet; default 5m
 
-# anthropic:                          # Anthropic Messages API; models: required
-# embeddings:                         # models: required (default 32 at once, idle 2m)
-# rerank:                             # models: required (default 32 at once, idle 2m)
-# transcription:                      # speech to text; models: required (default 8 at once, idle 5m)
-# speech:                             # text to speech; models: required (default 8 at once, idle 2m)
-# image:                              # image generation and editing; models: required (default 2 at once, idle 10m)
-# document:                           # layout parsing (PDF/scan → text) (default 4 at once, idle 10m)
-# conversion:                         # document format conversion (default 4 at once, idle 10m)
-# realtime:                           # live voice over WebSocket (default 4 at once, idle 5m)
-#   - name: my-voice
-#     url: http://host:8011
+  # my-voice:
+  #   address: 10.0.0.5:8011
+  #   allowed-endpoints: [WEBSOCKET /v1/stream, GET /v1/config]
 
-# storage:                            # your own S3-compatible storage (MinIO, Ceph, …)
-#   - name: files
-#     endpoint: https://s3.example.com:9000
-#     bucket: cletus                  # must already exist
-#     prefix: cletus/                 # all files are kept under this folder
-#     region: us-east-1
-#     access_key: AKIA…
-#     secret_key: …
-#     encryption: sse-c               # default; sse-c | sse-s3 | sse-kms | none
-#     encryption_key: …               # sse-c only: base64 of 32 bytes (eidonix-connector generate-key); back it up
-#     # max_file_size: 5GiB           # default (also the maximum)
-#     # max_read_per_hour: 50GB       # optional cap on bulk downloads
-#     # max_concurrent_requests: 16   # default
-
-# custom:                             # anything else; must list exactly what it allows
-#   - name: my-tool
-#     url: http://host:9000
-#     paths: ["POST /v1/run", "WEBSOCKET /v1/stream"]
-
-# access_log: /var/log/eidonix-connector/access.log   # default; one line per request, never contents
+  # files:                                # your own S3-compatible storage (MinIO, Ceph, RustFS, …)
+  #   kind: s3
+  #   address: https://s3.example.com:9000
+  #   bucket: cletus                      # must already exist; the whole bucket belongs to Cletus
+  #   access-key: …
+  #   secret-key: …
+  #   # region: us-east-1                 # default
+  #   encryption: sse-c                   # none (default) | sse-s3 | sse-c
+  #   encryption-key: …                   # sse-c only: base64 of 32 bytes (eidonix-connector generate-key); back it up
+  #   # ca-certificate: |                 # only for a store with its own certificate
+  #   # read-only: false                  # default
+  #   # max-file-size: 5GiB               # default (also the maximum)
+  #   # max-concurrent-requests: 16       # default

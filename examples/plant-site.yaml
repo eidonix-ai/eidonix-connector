@@ -1,0 +1,30 @@
+# A site that shares one chat model and its own S3-compatible storage.
+site: example-plant                   # the connector's name in Eidonix Setup
+
+upstream:
+  url: https://connect.eidonix.com
+  token: cxn_abcdefghijklmnop_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA   # placeholder; issued in Eidonix Setup
+  public-keys: [AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=]
+  # proxy: http://proxy.example.com:3128   # if this network requires a web proxy
+
+services:
+  glm:
+    address: 10.0.0.146:8000
+    allowed-endpoints: [POST /v1/*, GET /v1/models]
+    models:
+      GLM-5.3-Flash-NVFP4: {alias: GLM-5.3-Flash}   # <name on the server>: {alias: <name Eidonix uses>}
+    health: /health
+    max-concurrent-requests: 64
+    idle-timeout: 15m
+  files:
+    kind: s3
+    address: https://10.0.0.81:9000
+    bucket: cletus-files              # must already exist; the whole bucket belongs to Eidonix
+    access-key: placeholder-access-key
+    secret-key: placeholder-secret-key
+    encryption: sse-c
+    encryption-key: MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=   # placeholder; make one with eidonix-connector generate-key, and back it up
+    # ca-certificate: |               # if the store uses its own certificate
+    #   -----BEGIN CERTIFICATE-----
+    #   …
+    #   -----END CERTIFICATE-----

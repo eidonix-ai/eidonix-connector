@@ -35,25 +35,25 @@ func prepare(ctx context.Context, cfg *config.Config, version string) (Options, 
 			roots = x509.NewCertPool()
 		}
 		if !roots.AppendCertsFromPEM([]byte(cfg.Upstream.CACertificate)) {
-			return Options{}, errors.New("invalid upstream ca_certificate")
+			return Options{}, errors.New("invalid upstream ca-certificate")
 		}
 		tlsConfig.RootCAs = roots
 	}
 	origins := []string{cfg.Upstream.URL}
 	var proxy func(*http.Request) (*url.URL, error)
-	if cfg.Upstream.ProxyURL != "" {
-		p, e := url.Parse(cfg.Upstream.ProxyURL)
+	if cfg.Upstream.Proxy != "" {
+		p, e := url.Parse(cfg.Upstream.Proxy)
 		if e != nil {
 			return Options{}, e
 		}
 		proxy = http.ProxyURL(p)
-		origins = append(origins, cfg.Upstream.ProxyURL)
+		origins = append(origins, cfg.Upstream.Proxy)
 	}
 	policy, e := network.New(ctx, origins)
 	if e != nil {
 		return Options{}, e
 	}
-	return Options{Server: cfg.Upstream.URL, Token: cfg.Upstream.Token, Version: version, Keys: keys, TLSConfig: tlsConfig, DialContext: policy.DialContext, Proxy: proxy, refresh: policy.Refresh}, nil
+	return Options{Server: cfg.Upstream.URL, Token: cfg.Upstream.Token, Site: cfg.Site, Version: version, Keys: keys, TLSConfig: tlsConfig, DialContext: policy.DialContext, Proxy: proxy, refresh: policy.Refresh}, nil
 }
 
 // ValidateConfig resolves and pins the upstream (and proxy) addresses.

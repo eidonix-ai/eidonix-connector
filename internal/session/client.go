@@ -31,6 +31,8 @@ type Handler interface {
 }
 type Options struct {
 	Server, Token, Version string
+	// Site is the connector's name in Setup, sent in hello.
+	Site string
 	Keys                   []ed25519.PublicKey
 	TLSConfig              *tls.Config
 	DialContext            func(context.Context, string, string) (net.Conn, error)
@@ -95,6 +97,9 @@ func RunOptions(ctx context.Context, o Options, h Handler) error {
 // ErrAuthFailed reports that the upstream refused the connection token.
 var ErrAuthFailed = errors.New("upstream refused the connection token")
 
+// ErrSiteMismatch reports that the upstream refused the configured site name.
+var ErrSiteMismatch = errors.New("upstream refused the site name")
+
 // connect runs one session. The upgrade request carries no credential: the
 // token is sent on the control stream only after the server's signature over
 // this connection's nonce and instance has been verified.
@@ -116,7 +121,7 @@ func connect(ctx context.Context, endpoint, instance string, o Options, h Handle
 	}
 	defer ws.Close()
 	if ws.Subprotocol() != protocol.Subprotocol {
-		return errors.New("upstream did not accept the eidonix-connector.v2 subprotocol")
+		return errors.New("upstream did not accept the " + protocol.Subprotocol + " subprotocol")
 	}
 	if e = protocol.VerifyIdentity(response.Header, nonce, instance, o.Keys, time.Now()); e != nil {
 		return fmt.Errorf("upstream identity: %w", e)
@@ -168,7 +173,7 @@ func connect(ctx context.Context, endpoint, instance string, o Options, h Handle
 	if env.Type != protocol.MessageAuthOK || auth.SessionID == "" {
 		return errors.New("expected auth_ok")
 	}
-	if e = protocol.WriteMessage(control, protocol.Hello{V: protocol.Version, Type: protocol.MessageHello, InstanceID: instance, Version: o.Version, OS: runtime.GOOS, Arch: runtime.GOARCH, Capabilities: []string{protocol.CapabilityInference, protocol.CapabilityStorage}, Services: h.HelloServices()}); e != nil {
+	if e = protocol.WriteMessage(control, protocol.Hello{V: protocol.Version, Type: protocol.MessageHello, Site: o.Site, InstanceID: instance, Version: o.Version, OS: runtime.GOOS, Arch: runtime.GOARCH, Capabilities: []string{protocol.CapabilityInference, protocol.CapabilityStorage}, Services: h.HelloServices()}); e != nil {
 		return e
 	}
 	env, e = protocol.ReadMessage(reader)
@@ -176,6 +181,14 @@ func connect(ctx context.Context, endpoint, instance string, o Options, h Handle
 		return e
 	}
 	var ack protocol.HelloAck
+	if env.Type == protocol.MessageClose || env.Type == protocol.MessageAuthFailed {
+		var c protocol.Control
+		env.Decode(&c)
+		if c.Reason == "site_mismatch" {
+			return fmt.Errorf("%w: site %q is not this connector's name in Eidonix Setup; set site in the configuration to the name Setup shows", ErrSiteMismatch, o.Site)
+		}
+		return fmt.Errorf("upstream closed session: %s", c.Reason)
+	}
 	if env.Type != protocol.MessageHelloAck || env.Decode(&ack) != nil {
 		return errors.New("expected hello_ack")
 	}

@@ -15,7 +15,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/eidonix-ai/eidonix-connector/internal/servicetype"
 	"github.com/eidonix-ai/eidonix-connector/protocol"
 )
 
@@ -85,12 +84,12 @@ func (f *fakeServer) last() (string, string, string) {
 	return path, f.body, f.model
 }
 
-const rerankYAML = `rerank:
-  - name: rr
-    url: %s
+const rerankYAML = `  rr:
+    address: %s
+    allowed-endpoints: [POST /v1/rerank, GET /v1/models]
     models:
-      jina-reranker: jina-reranker-v3
-      bge: bge
+      jina-reranker-v3: {alias: jina-reranker}
+      bge:
 `
 
 func TestAllowlistJSON(t *testing.T) {
@@ -104,7 +103,7 @@ func TestAllowlistJSON(t *testing.T) {
 		t.Fatalf("%d %s", resp.StatusCode, got)
 	}
 	record := lastAccess(t, cfg.AccessLog)
-	if record["model"] != "jina-reranker" || record["upstream_model"] != "jina-reranker-v3" || record["status"] != float64(200) || record["org_slug"] != "example-org" || record["user_key_id"] != "42" || record["org_id"] != "7" || record["request_id"] != "req-1" || record["type"] != "rerank" {
+	if record["model"] != "jina-reranker" || record["upstream_model"] != "jina-reranker-v3" || record["status"] != float64(200) || record["org_slug"] != "example-org" || record["user_key_id"] != "42" || record["org_id"] != "7" || record["request_id"] != "req-1" || record["kind"] != "http" {
 		t.Fatalf("access %v", record)
 	}
 	if strings.Contains(fmt.Sprint(record), "documents") {
@@ -148,7 +147,7 @@ func TestModelNotAllowed(t *testing.T) {
 }
 func TestSingleModelIsAdded(t *testing.T) {
 	f := &fakeServer{}
-	x := newConnector(t, testConfig(t, "embeddings:\n  - name: e\n    url: %s\n    models: {nomic: nomic-ai/nomic-embed-text-v1.5}\n", f.start(t).URL))
+	x := newConnector(t, testConfig(t, "  e:\n    address: %s\n    allowed-endpoints: [POST /v1/embeddings]\n    models:\n      nomic-ai/nomic-embed-text-v1.5: {alias: nomic}\n", f.start(t).URL))
 	if resp, _ := exchange(t, x, "e", post("/v1/embeddings", "application/json", `{"input":"x"}`)); resp.StatusCode != 200 {
 		t.Fatal(resp.StatusCode)
 	}
@@ -185,7 +184,7 @@ func transcription(fields [][2]string, file []byte, fileFirst bool) string {
 }
 func TestAllowlistMultipart(t *testing.T) {
 	f := &fakeServer{}
-	cfg := testConfig(t, "transcription:\n  - name: stt\n    url: %s\n    models:\n      whisper: /models/faster-whisper-large-v3-turbo\n      tiny: tiny\n", f.start(t).URL)
+	cfg := testConfig(t, "  stt:\n    address: %s\n    allowed-endpoints: [POST /v1/audio/transcriptions]\n    models:\n      /models/faster-whisper-large-v3-turbo: {alias: whisper}\n      tiny: {}\n", f.start(t).URL)
 	x := newConnector(t, cfg)
 	file := bytes.Repeat([]byte("\x00RIFFwhisper\r\n--"), 20000)
 	for _, fileFirst := range []bool{false, true} {
@@ -222,78 +221,76 @@ func TestAllowlistMultipart(t *testing.T) {
 	}
 }
 
-// TestLocalModelList: an allowlisted service answers GET /v1/models itself.
-func TestLocalModelList(t *testing.T) {
-	f := &fakeServer{models: `{"data":[{"id":"should-not-appear"}]}`}
+// TestModelListReachesServer: GET /v1/models goes to the server (the
+// connector no longer answers it); hello advertises the names Cletus uses.
+func TestModelListReachesServer(t *testing.T) {
+	f := &fakeServer{models: `{"data":[{"id":"jina-reranker-v3"}]}`}
 	x := newConnector(t, testConfig(t, rerankYAML, f.start(t).URL))
 	resp, data := exchange(t, x, "rr", get("/v1/models"))
-	var list struct {
-		Object string
-		Data   []struct{ ID, Object string }
-	}
-	if err := json.Unmarshal(data, &list); err != nil || resp.StatusCode != 200 || list.Object != "list" || len(list.Data) != 2 || list.Data[0].ID != "jina-reranker" || list.Data[1].ID != "bge" {
+	if resp.StatusCode != 200 || string(data) != f.models || f.hits.Load() != 1 {
 		t.Fatalf("%d %s", resp.StatusCode, data)
 	}
-	if f.hits.Load() != 0 {
-		t.Fatal("model list fetched from the server")
-	}
-	if got := x.HelloServices()[0]; !reflect.DeepEqual(got.Models, []string{"jina-reranker", "bge"}) || got.ModelsAny {
+	if got := x.HelloServices()[0]; !reflect.DeepEqual(got.Models, []string{"jina-reranker", "bge"}) || got.Kind != "http" || !reflect.DeepEqual(got.Endpoints, []string{"POST /v1/rerank", "GET /v1/models"}) {
 		t.Fatal(got)
 	}
 }
 
-// TestAPIPathAndAnyDiscovery: api_path / maps /v1/x to /x (Infinity), models: any
-// passes through, discovery fills the advertised list, and an emptied list is reported as [].
-func TestAPIPathAndAnyDiscovery(t *testing.T) {
-	healthInterval = 30 * time.Millisecond
-	defer func() { healthInterval = servicetype.HealthInterval }()
-	f := &fakeServer{models: `{"data":[{"id":"a"},{"id":"b"}]}`}
-	s := f.start(t)
-	x := newConnector(t, testConfig(t, "embeddings:\n  - name: e\n    url: %s\n    api_path: /\n    models: any\n", s.URL))
-	if resp, _ := exchange(t, x, "e", post("/v1/embeddings", "application/json", `{"model":"anything","input":"x"}`)); resp.StatusCode != 200 {
-		t.Fatal(resp.StatusCode)
-	}
-	if path, body, _ := f.last(); path != "POST /embeddings" || body != `{"model":"anything","input":"x"}` {
-		t.Fatal(path, body)
-	}
-	exchange(t, x, "e", get("/v1/models"))
-	if path, _, _ := f.last(); path != "GET /models" {
-		t.Fatal(path)
-	}
-	wait := func(want []string) {
-		t.Helper()
-		deadline := time.Now().Add(3 * time.Second)
-		for {
-			got := x.StatusServices()[0].Models
-			if reflect.DeepEqual(got, want) {
-				return
-			}
-			if time.Now().After(deadline) {
-				t.Fatalf("models %v, want %v", got, want)
-			}
-			time.Sleep(10 * time.Millisecond)
+// TestModelsRequireReadableBodies: a service that checks models refuses POST
+// bodies it cannot read (content_type_not_allowed) and GET or DELETE
+// requests with a body, before contacting the server.
+func TestModelsRequireReadableBodies(t *testing.T) {
+	f := &fakeServer{}
+	x := newConnector(t, testConfig(t, "  rr:\n    address: %s\n    allowed-endpoints: [POST /v1/rerank, GET /v1/models, DELETE /v1/x]\n    models: [bge]\n", f.start(t).URL))
+	for _, tc := range []struct{ request, code string }{
+		{post("/v1/rerank", "text/plain", `{"model":"secret"}`), "content_type_not_allowed"},
+		{post("/v1/rerank", "application/octet-stream", `{"model":"secret"}`), "content_type_not_allowed"},
+		{"POST /v1/rerank HTTP/1.1\r\nHost: x\r\nContent-Length: 2\r\n\r\n{}", "content_type_not_allowed"},
+		{"GET /v1/models HTTP/1.1\r\nHost: x\r\nContent-Length: 2\r\n\r\n{}", "invalid_request"},
+		{"DELETE /v1/x HTTP/1.1\r\nHost: x\r\nContent-Length: 2\r\n\r\n{}", "invalid_request"},
+	} {
+		resp, _ := exchange(t, x, "rr", tc.request)
+		if resp.Header.Get(protocol.HeaderError) != tc.code {
+			t.Fatalf("%q: %d %s", tc.request, resp.StatusCode, resp.Header.Get(protocol.HeaderError))
 		}
 	}
-	wait([]string{"a", "b"})
-	if h := x.HelloServices()[0]; !h.ModelsAny {
-		t.Fatal(h)
+	if f.hits.Load() != 0 {
+		t.Fatal("refused request reached the server")
 	}
-	f.mu.Lock()
-	f.models = `{"data":[]}`
-	f.mu.Unlock()
-	wait([]string{})
+	if resp, _ := exchange(t, x, "rr", "DELETE /v1/x HTTP/1.1\r\nHost: x\r\n\r\n"); resp.StatusCode != 200 {
+		t.Fatal(resp.StatusCode)
+	}
+	if path, _, _ := f.last(); path != "DELETE /v1/x" {
+		t.Fatal(path)
+	}
+}
+
+// TestWithoutModelsBodyPassesUnread: a service without models forwards any
+// body and content type unchanged, to the same path (no rewriting), and
+// advertises an empty model list.
+func TestWithoutModelsBodyPassesUnread(t *testing.T) {
+	f := &fakeServer{}
+	x := newConnector(t, testConfig(t, "  e:\n    address: %s\n    allowed-endpoints: [POST /embeddings, POST /v1/images/*]\n", f.start(t).URL))
+	for _, tc := range []struct{ path, ct, body string }{
+		{"/embeddings", "application/json", `{"model":"anything","input":"x"}`},
+		{"/embeddings", "text/plain", `not json`},
+		{"/v1/images/generations", "application/json", `{"prompt":"p"}`},
+		{"/v1/images/edits/extra", "application/octet-stream", "raw"},
+	} {
+		if resp, _ := exchange(t, x, "e", post(tc.path, tc.ct, tc.body)); resp.StatusCode != 200 {
+			t.Fatal(tc.path, resp.StatusCode)
+		}
+		if path, body, _ := f.last(); path != "POST "+tc.path || body != tc.body {
+			t.Fatal(path, body)
+		}
+	}
+	for _, path := range []string{"/v1/embeddings", "/v1/images", "/v1/images/"} {
+		if resp, _ := exchange(t, x, "e", post(path, "application/json", "{}")); resp.Header.Get(protocol.HeaderError) != "path_not_allowed" {
+			t.Fatal(path, resp.StatusCode)
+		}
+	}
 	encoded, _ := json.Marshal(x.StatusServices())
 	if !strings.Contains(string(encoded), `"models":[]`) {
 		t.Fatal(string(encoded))
-	}
-	f.mu.Lock()
-	sawHealth := false
-	for _, p := range f.paths {
-		sawHealth = sawHealth || p == "GET /health"
-	}
-	f.mu.Unlock()
-	if !sawHealth {
-		t.Fatal("health is not probed at the server root")
 	}
 }
 
@@ -301,7 +298,7 @@ func TestAPIPathAndAnyDiscovery(t *testing.T) {
 func TestPerServiceBusy(t *testing.T) {
 	f := &fakeServer{release: make(chan struct{})}
 	s := f.start(t)
-	x := newConnector(t, testConfig(t, "chat:\n  - name: one\n    url: %s\n    models: any\n    max_concurrent_requests: 1\n  - name: two\n    url: %[1]s\n    models: any\n", s.URL))
+	x := newConnector(t, testConfig(t, "  one:\n    address: %s\n    allowed-endpoints: [POST /v1/*]\n    max-concurrent-requests: 1\n  two:\n    address: %[1]s\n    allowed-endpoints: [POST /v1/*]\n", s.URL))
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -327,7 +324,7 @@ func TestPerServiceBusy(t *testing.T) {
 }
 func TestRateLimitPerMinute(t *testing.T) {
 	f := &fakeServer{}
-	x := newConnector(t, testConfig(t, "chat:\n  - name: c\n    url: %s\n    models: any\n    max_requests_per_minute: 2\n", f.start(t).URL))
+	x := newConnector(t, testConfig(t, "  c:\n    address: %s\n    allowed-endpoints: [POST /v1/*]\n    max-requests-per-minute: 2\n", f.start(t).URL))
 	for i, want := range []int{200, 200, 429} {
 		resp, _ := exchange(t, x, "c", post("/v1/chat/completions", "application/json", `{}`))
 		if resp.StatusCode != want || (want == 429 && resp.Header.Get(protocol.HeaderError) != "rate_limited") {
@@ -336,26 +333,23 @@ func TestRateLimitPerMinute(t *testing.T) {
 	}
 }
 
-// TestContracts: each type accepts exactly its list; custom exactly its paths.
-func TestContracts(t *testing.T) {
+// TestAllowedEndpoints: each service accepts exactly its allowed-endpoints.
+func TestAllowedEndpoints(t *testing.T) {
 	f := &fakeServer{}
 	s := f.start(t)
-	x := newConnector(t, testConfig(t, `chat:
-  - name: chat
-    url: %s
-    models: any
-    api_key: sk-local
-anthropic:
-  - name: claude
-    url: %[1]s
-    models: any
-realtime:
-  - name: voice
-    url: %[1]s
-custom:
-  - name: tool
-    url: %[1]s
-    paths: ["POST /v1/run"]
+	x := newConnector(t, testConfig(t, `  chat:
+    address: %s
+    allowed-endpoints: [POST /v1/*, GET /v1/models]
+    api-key: sk-local
+  claude:
+    address: %[1]s
+    allowed-endpoints: [POST /v1/messages, POST /v1/messages/count_tokens]
+  voice:
+    address: %[1]s
+    allowed-endpoints: [WEBSOCKET /v1/stream, GET /v1/config]
+  tool:
+    address: %[1]s
+    allowed-endpoints: [POST /v1/run, PUT /v1/state, DELETE /v1/jobs/*]
 `, s.URL))
 	for _, tc := range []struct {
 		service, request string
@@ -363,14 +357,23 @@ custom:
 	}{
 		{"chat", post("/v1/chat/completions", "application/json", "{}"), true},
 		{"chat", post("/v1/responses", "application/json", "{}"), true},
-		{"chat", post("/v1/completions", "application/json", "{}"), false},
-		{"chat", post("/v1/embeddings", "application/json", "{}"), false},
+		{"chat", post("/v1/completions", "application/json", "{}"), true},
+		{"chat", get("/v1/models"), true},
+		{"chat", get("/v1/models?x=1"), true},
+		{"chat", get("/v1/chat/completions"), false},
+		{"chat", post("/v2/chat", "application/json", "{}"), false},
 		{"chat", get("/metrics"), false},
 		{"claude", post("/v1/messages", "application/json", "{}"), true},
+		{"claude", post("/v1/messages/count_tokens", "application/json", "{}"), true},
+		{"claude", post("/v1/messages/batches", "application/json", "{}"), false},
 		{"claude", post("/v1/chat/completions", "application/json", "{}"), false},
 		{"voice", get("/v1/config"), true},
 		{"voice", get("/v1/stream"), false},
 		{"tool", post("/v1/run", "application/json", "{}"), true},
+		{"tool", "PUT /v1/state HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n", true},
+		{"tool", "DELETE /v1/jobs/7 HTTP/1.1\r\nHost: x\r\n\r\n", true},
+		{"tool", "DELETE /v1/jobs HTTP/1.1\r\nHost: x\r\n\r\n", false},
+		{"tool", "PATCH /v1/run HTTP/1.1\r\nHost: x\r\n\r\n", false},
 		{"tool", get("/v1/run"), false},
 		{"tool", post("/v1/other", "application/json", "{}"), false},
 	} {
@@ -379,14 +382,15 @@ custom:
 			t.Fatalf("%s %q: %d %s", tc.service, strings.SplitN(tc.request, "\r\n", 2)[0], resp.StatusCode, resp.Header.Get(protocol.HeaderError))
 		}
 	}
-	// The api_key is the only credential sent upstream; the caller's is dropped.
-	req := "POST /v1/chat/completions HTTP/1.1\r\nHost: ignored\r\nAuthorization: Bearer caller\r\nAnthropic-Version: 1\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}"
+	// The api-key is the only credential sent upstream; the caller's is
+	// dropped. Anthropic-Version passes to any service.
+	req := "POST /v1/chat/completions HTTP/1.1\r\nHost: ignored\r\nAuthorization: Bearer caller\r\nAnthropic-Version: 1\r\nCookie: c\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}"
 	exchange(t, x, "chat", req)
 	f.mu.Lock()
-	auth, anthropic := f.auth, f.headers.Get("Anthropic-Version")
+	auth, anthropic, cookie := f.auth, f.headers.Get("Anthropic-Version"), f.headers.Get("Cookie")
 	f.mu.Unlock()
-	if auth != "Bearer sk-local" || anthropic != "" {
-		t.Fatal(auth, anthropic)
+	if auth != "Bearer sk-local" || anthropic != "1" || cookie != "" {
+		t.Fatal(auth, anthropic, cookie)
 	}
 	exchange(t, x, "claude", strings.Replace(req, "/v1/chat/completions", "/v1/messages", 1))
 	f.mu.Lock()
@@ -404,7 +408,7 @@ func TestStreamMetadataInAccessLogOnRefusal(t *testing.T) {
 	if r["error"] != "path_not_allowed" || r["status"] != float64(403) || r["service"] != "chat" || r["org_slug"] != "example-org" || r["path"] != "/admin" || r["method"] != "GET" {
 		t.Fatal(r)
 	}
-	for _, k := range []string{"time", "session", "service", "type", "method", "path", "status", "bytes_in", "bytes_out", "duration_ms", "model", "org_slug", "org_id", "user_key_id", "request_id", "upstream_host", "error"} {
+	for _, k := range []string{"time", "session", "service", "kind", "method", "path", "status", "bytes_in", "bytes_out", "duration_ms", "model", "org_slug", "org_id", "user_key_id", "request_id", "upstream_host", "error"} {
 		if _, ok := r[k]; !ok {
 			t.Fatalf("access log lacks %s: %v", k, r)
 		}

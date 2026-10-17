@@ -64,7 +64,7 @@ func (h *Handler) startup(ctx context.Context) {
 	}
 	if e == nil {
 		c, stop := context.WithCancel(ctx)
-		for info := range h.core.Client.ListObjects(c, h.cfg.Bucket, minio.ListObjectsOptions{Prefix: h.cfg.Prefix, Recursive: true, MaxKeys: 1}) {
+		for info := range h.core.Client.ListObjects(c, h.cfg.Bucket, minio.ListObjectsOptions{Recursive: true, MaxKeys: 1}) {
 			e = info.Err
 			break
 		}
@@ -88,7 +88,7 @@ func (h *Handler) sweep(ctx context.Context, now time.Time) {
 	defer cancel()
 	keyMarker, idMarker := "", ""
 	for pages := 0; pages < 10000; pages++ {
-		result, e := h.core.ListMultipartUploads(ctx, h.cfg.Bucket, h.cfg.Prefix, keyMarker, idMarker, "", 1000)
+		result, e := h.core.ListMultipartUploads(ctx, h.cfg.Bucket, "", keyMarker, idMarker, "", 1000)
 		if e != nil {
 			h.mu.Lock()
 			warn := !h.warnedCleanup
@@ -104,12 +104,12 @@ func (h *Handler) sweep(ctx context.Context, now time.Time) {
 			return
 		}
 		for _, u := range result.Uploads {
-			if !strings.HasPrefix(u.Key, h.cfg.Prefix) || u.Initiated.After(now.Add(-h.age)) {
+			if u.Initiated.After(now.Add(-h.age)) {
 				continue
 			}
-			relative := strings.TrimPrefix(u.Key, h.cfg.Prefix)
+			relative := u.Key
 			checkRelative := relative
-			prefixBytes := len(h.cfg.Prefix)
+			prefixBytes := 0
 			if strings.HasPrefix(relative, protocol.ReservedKeySegment+"/") {
 				checkRelative = strings.TrimPrefix(relative, protocol.ReservedKeySegment+"/")
 				prefixBytes += len(protocol.ReservedKeySegment + "/")
@@ -134,9 +134,6 @@ func (h *Handler) sweep(ctx context.Context, now time.Time) {
 			return
 		}
 		if result.NextKeyMarker == keyMarker && result.NextUploadIDMarker == idMarker {
-			return
-		}
-		if !strings.HasPrefix(result.NextKeyMarker, h.cfg.Prefix) {
 			return
 		}
 		keyMarker, idMarker = result.NextKeyMarker, result.NextUploadIDMarker
@@ -171,9 +168,9 @@ func (h *Handler) Check(parent context.Context, writeProbe bool) ([]CheckResult,
 	}
 	c, stop := context.WithCancel(ctx)
 	var existing *minio.ObjectInfo
-	for info := range h.core.Client.ListObjects(c, h.cfg.Bucket, minio.ListObjectsOptions{Prefix: h.cfg.Prefix, Recursive: true, MaxKeys: 1}) {
+	for info := range h.core.Client.ListObjects(c, h.cfg.Bucket, minio.ListObjectsOptions{Recursive: true, MaxKeys: 1}) {
 		e = info.Err
-		if e == nil && strings.HasPrefix(info.Key, h.cfg.Prefix) && protocol.ValidateRelativeKey(strings.TrimPrefix(info.Key, h.cfg.Prefix), len(h.cfg.Prefix), false) == nil && info.Size > 0 {
+		if e == nil && protocol.ValidateRelativeKey(info.Key, 0, false) == nil && info.Size > 0 {
 			existing = &info
 		}
 		break
@@ -198,10 +195,12 @@ func (h *Handler) Check(parent context.Context, writeProbe bool) ([]CheckResult,
 	if e == nil {
 		out[len(out)-1].Message = "credential can list buckets; reduce permissions"
 	}
-	_, e = h.core.ListMultipartUploads(ctx, h.cfg.Bucket, h.cfg.Prefix, "", "", "", 1)
+	_, e = h.core.ListMultipartUploads(ctx, h.cfg.Bucket, "", "", "", "", 1)
 	appendCheck("multipart_cleanup_permission", e, e != nil)
-	out = append(out, CheckResult{Name: "lifecycle_reminder", OK: true, Warning: true, Message: "configure AbortIncompleteMultipartUpload lifecycle under the prefix"})
-	if writeProbe {
+	out = append(out, CheckResult{Name: "lifecycle_reminder", OK: true, Warning: true, Message: "configure an AbortIncompleteMultipartUpload lifecycle rule on the bucket"})
+	if writeProbe && h.cfg.ReadOnly {
+		out = append(out, CheckResult{Name: "write_probe", OK: true, Warning: true, Message: "skipped: the service is read-only"})
+	} else if writeProbe {
 		e = h.probe(ctx)
 		appendCheck("write_probe", e, false)
 		if e != nil {
@@ -215,13 +214,13 @@ func (h *Handler) probe(ctx context.Context) (err error) {
 	if _, e := rand.Read(random); e != nil {
 		return e
 	}
-	key := h.cfg.Prefix + protocol.ReservedKeySegment + "/probe/" + hex.EncodeToString(random)
+	key := protocol.ReservedKeySegment + "/probe/" + hex.EncodeToString(random)
 	defer func() {
 		cleanup, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		e := h.core.RemoveObject(cleanup, h.cfg.Bucket, key, minio.RemoveObjectOptions{})
 		if e != nil {
-			h.record(AuditEntry{Origin: "local", Op: "probe_cleanup", KeyHash: h.hash(strings.TrimPrefix(key, h.cfg.Prefix)), Status: backendCode(e)})
+			h.record(AuditEntry{Origin: "local", Op: "probe_cleanup", KeyHash: h.hash(key), Status: backendCode(e)})
 			if err == nil {
 				err = e
 			}

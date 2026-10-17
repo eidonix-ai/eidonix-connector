@@ -24,15 +24,18 @@ import (
 	"github.com/eidonix-ai/eidonix-connector/internal/storage"
 )
 
-var version = "0.2.0"
+var version = "0.3.0"
 
 const usage = `usage:
   eidonix-connector run [--config PATH]                          connect and share the configured services
   eidonix-connector check [--config PATH] [--redacted] [--write-probe]
                                                                  explain the configuration (--redacted: print it with secrets hidden)
   eidonix-connector init [PATH]                                  write a blank configuration (stdout without PATH)
-  eidonix-connector generate-key                                 print a new storage encryption_key
-  eidonix-connector convert OLD.toml                             convert a v0.1 configuration (YAML to stdout, review list to stderr)
+  eidonix-connector generate-key                                 print a new storage encryption-key
+  eidonix-connector convert --site NAME OLD                      convert a v0.2 (or v0.1) configuration to v0.3
+                                                                 (YAML to stdout, review list to stderr; NAME is the connector's name in Setup)
+  eidonix-connector storage move-to-root SERVICE --from FOLDER/ [--config PATH] [--dry-run]
+                                                                 move a storage service's files from a folder to the top of its bucket
   eidonix-connector version`
 
 func main() {
@@ -52,16 +55,25 @@ func execute(args []string, out, errOut io.Writer, uid int) error {
 	allowRoot := fs.Bool("allow-root", false, "allow running as root (diagnostics only)")
 	redacted := fs.Bool("redacted", false, "check: print the file with every secret replaced")
 	writeProbe := fs.Bool("write-probe", false, "check: also write, read and delete a temporary storage object")
-	if err := fs.Parse(args[1:]); err != nil {
+	site := fs.String("site", "", "convert: the connector's name in Eidonix Setup")
+	from := fs.String("from", "", "storage move-to-root: the folder to move (ending in /)")
+	dryRun := fs.Bool("dry-run", false, "storage move-to-root: report what would be moved, change nothing")
+	rest, err := parseInterleaved(fs, args[1:])
+	if err != nil {
 		return err
 	}
-	rest := fs.Args()
-	maxArgs := map[string]int{"init": 1, "convert": 1}[command]
-	if len(rest) > maxArgs || command == "convert" && len(rest) != 1 {
+	maxArgs := map[string]int{"init": 1, "convert": 1, "storage": 2}[command]
+	if len(rest) > maxArgs || command == "convert" && len(rest) != 1 || command == "storage" && (len(rest) != 2 || rest[0] != "move-to-root") {
 		return errors.New("unexpected arguments\n" + usage)
 	}
 	if (*redacted || *writeProbe) && command != "check" {
 		return errors.New("--redacted and --write-probe apply to check only")
+	}
+	if *site != "" && command != "convert" {
+		return errors.New("--site applies to convert only")
+	}
+	if (*from != "" || *dryRun) && command != "storage" {
+		return errors.New("--from and --dry-run apply to storage move-to-root only")
 	}
 	switch command {
 	case "version":
@@ -107,7 +119,10 @@ func execute(args []string, out, errOut io.Writer, uid int) error {
 		fmt.Fprintln(out, base64.StdEncoding.EncodeToString(key))
 		return nil
 	case "convert":
-		yaml, notes, err := convert.Convert(rest[0])
+		if *site == "" {
+			return errors.New("convert needs --site NAME: the connector's name in Eidonix Setup\n" + usage)
+		}
+		yaml, notes, err := convert.Convert(rest[0], *site)
 		if err != nil {
 			return err
 		}
@@ -121,8 +136,57 @@ func execute(args []string, out, errOut io.Writer, uid int) error {
 			}
 		}
 		return nil
+	case "storage":
+		if *from == "" {
+			return errors.New("storage move-to-root needs --from FOLDER/ (for example --from cletus/)")
+		}
+		return moveToRoot(*path, rest[1], *from, *dryRun, out)
 	}
 	return fmt.Errorf("unknown command %q\n%s", command, usage)
+}
+
+// parseInterleaved parses flags that may come before, between or after the
+// positional arguments, and returns the positional arguments.
+func parseInterleaved(fs *flag.FlagSet, args []string) ([]string, error) {
+	var rest []string
+	for {
+		if err := fs.Parse(args); err != nil {
+			return nil, err
+		}
+		args = fs.Args()
+		if len(args) == 0 {
+			return rest, nil
+		}
+		if args[0] == "--" {
+			return append(rest, args[1:]...), nil
+		}
+		rest = append(rest, args[0])
+		args = args[1:]
+	}
+}
+
+// moveToRoot runs storage move-to-root for the named s3 service of the file
+// at path.
+func moveToRoot(path, name, from string, dryRun bool, out io.Writer) error {
+	cfg, err := config.Load(path)
+	if err != nil {
+		return err
+	}
+	for _, svc := range cfg.Services {
+		if svc.Name != name {
+			continue
+		}
+		if svc.Kind != config.KindS3 {
+			return fmt.Errorf("service %q is not an s3 service", name)
+		}
+		if !dryRun {
+			fmt.Fprintln(out, "Make sure the connector is stopped (systemctl stop eidonix-connector) so nothing writes while files move.")
+		}
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		return storage.MoveToRoot(ctx, svc, from, dryRun, out)
+	}
+	return fmt.Errorf("%s has no service %q", path, name)
 }
 
 // check validates the file (permission gate included) and explains it, then

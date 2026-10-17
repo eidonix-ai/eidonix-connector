@@ -11,7 +11,7 @@ type accessEntry struct {
 	Time          time.Time `json:"time"`
 	Session       string    `json:"session"`
 	Service       string    `json:"service"`
-	Type          string    `json:"type"`
+	Kind          string    `json:"kind"`
 	Method        string    `json:"method"`
 	Path          string    `json:"path"`
 	Status        int       `json:"status"`

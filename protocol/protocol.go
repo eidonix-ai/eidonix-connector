@@ -1,7 +1,7 @@
-// Package protocol defines the shared Eidonix connector wire protocol, version 2.
+// Package protocol defines the shared Eidonix connector wire protocol, version 3.
 //
 // The package has no dependencies on connector internals: the gateway side
-// vendors it as-is. Every exported type and constant is part of the frozen v2
+// vendors it as-is. Every exported type and constant is part of the frozen v3
 // contract.
 package protocol
 
@@ -16,8 +16,8 @@ import (
 )
 
 const (
-	Version         = 2
-	Subprotocol     = "eidonix-connector.v2"
+	Version         = 3
+	Subprotocol     = "eidonix-connector.v3"
 	SessionPath     = "/v1/connectors/session"
 	MaxControlBytes = 64 << 10
 	MaxHeaderBytes  = 4 << 10
@@ -36,24 +36,12 @@ const (
 	MaxStreamMetadataBytes = 64
 )
 
-// Service types, in the order configuration files and documentation list them.
+// Service kinds. An http service carries HTTP and WebSocket streams; an s3
+// service carries storage streams.
 const (
-	TypeChat          = "chat"
-	TypeAnthropic     = "anthropic"
-	TypeEmbeddings    = "embeddings"
-	TypeRerank        = "rerank"
-	TypeTranscription = "transcription"
-	TypeSpeech        = "speech"
-	TypeImage         = "image"
-	TypeDocument      = "document"
-	TypeConversion    = "conversion"
-	TypeRealtime      = "realtime"
-	TypeStorage       = "storage"
-	TypeCustom        = "custom"
+	KindHTTP = "http"
+	KindS3   = "s3"
 )
-
-// ServiceTypes lists every service type in canonical order.
-var ServiceTypes = []string{TypeChat, TypeAnthropic, TypeEmbeddings, TypeRerank, TypeTranscription, TypeSpeech, TypeImage, TypeDocument, TypeConversion, TypeRealtime, TypeStorage, TypeCustom}
 
 // Control message types.
 const (
@@ -73,14 +61,19 @@ var servicePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,39}$`)
 // ValidServiceName reports whether s is a legal service name.
 func ValidServiceName(s string) bool { return servicePattern.MatchString(s) }
 
-// Service is one advertised service in hello. Models lists the names callers
-// may use (empty for types without models); ModelsAny means the owner allows
-// any model and Models is the discovered list.
+// ValidSiteName reports whether s is a legal site name (the connector's name
+// in Setup); the rule is the same as for service names.
+func ValidSiteName(s string) bool { return servicePattern.MatchString(s) }
+
+// Service is one advertised service in hello. Kind is KindHTTP or KindS3.
+// Endpoints lists an http service's allowed requests ("POST /v1/*",
+// "WEBSOCKET /v1/stream", …). Models lists the names callers use; empty means
+// the connector does not check models. Storage is set for s3 services only.
 type Service struct {
 	Name                  string          `json:"name"`
-	Type                  string          `json:"type"`
+	Kind                  string          `json:"kind"`
+	Endpoints             []string        `json:"endpoints,omitempty"`
 	Models                []string        `json:"models"`
-	ModelsAny             bool            `json:"models_any"`
 	MaxConcurrentRequests int             `json:"max_concurrent_requests"`
 	Healthy               bool            `json:"healthy"`
 	Storage               *StorageService `json:"storage,omitempty"`
@@ -123,9 +116,13 @@ type AuthResult struct {
 	Reason    string `json:"reason,omitempty"`
 }
 
+// Hello advertises the connector's services. Site is the connector's name as
+// configured on this machine; the gateway closes the session with reason
+// site_mismatch when it differs from the connector's name in Setup.
 type Hello struct {
 	V            int       `json:"v"`
 	Type         string    `json:"type"`
+	Site         string    `json:"site"`
 	InstanceID   string    `json:"instance_id"`
 	Version      string    `json:"version"`
 	OS           string    `json:"os"`

@@ -61,7 +61,9 @@ func dockerFixture(t *testing.T) (*Handler, *minio.Client, config.Storage, []byt
 	key := make([]byte, 32)
 	rand.Read(key)
 	cfg := config.StorageDefaults()
-	cfg.Endpoint, cfg.Bucket, cfg.Prefix, cfg.PathStyle, cfg.CACertificate = endpoint, bucket, "objects/", true, string(ca)
+	cfg.Endpoint, cfg.Bucket, cfg.PathStyle, cfg.CACertificate, cfg.Encryption = endpoint, bucket, true, string(ca), "sse-c"
+	cfg.EncryptionKey = key
+	cfg.AccessKey, cfg.SecretKey = os.Getenv("CONNECTOR_TEST_S3_ACCESS"), os.Getenv("CONNECTOR_TEST_S3_SECRET")
 	cfg.PartSize, cfg.MaxOpsPerSecond, cfg.IdleTimeout = 5<<20, 10000, 10*time.Second
 	h, e := newHandler(ctx, "files", 4, cfg, os.Getenv("CONNECTOR_TEST_S3_ACCESS"), os.Getenv("CONNECTOR_TEST_S3_SECRET"), key, nil)
 	if e != nil {
@@ -253,7 +255,7 @@ func TestDockerStorageSixOperations(t *testing.T) {
 			r, _ = storageExchange(t, h, protocol.StreamHeader{Op: "list", Max: 1000, Recursive: true}, nil)
 			resultOK(t, r)
 			if n > 0 {
-				obj, e := admin.GetObject(context.Background(), cfg.Bucket, cfg.Prefix+key, minio.GetObjectOptions{})
+				obj, e := admin.GetObject(context.Background(), cfg.Bucket, key, minio.GetObjectOptions{})
 				if e == nil {
 					_, e = io.ReadAll(obj)
 					obj.Close()
@@ -278,7 +280,7 @@ func TestDockerStorageSixOperations(t *testing.T) {
 	if e != nil {
 		t.Fatalf("write probe: %v (%v)", e, checks)
 	}
-	for object := range admin.ListObjects(context.Background(), cfg.Bucket, minio.ListObjectsOptions{Prefix: cfg.Prefix + ".eidonix-connector/", Recursive: true}) {
+	for object := range admin.ListObjects(context.Background(), cfg.Bucket, minio.ListObjectsOptions{Prefix: ".eidonix-connector/", Recursive: true}) {
 		if object.Err != nil {
 			t.Fatal(object.Err)
 		}
@@ -306,7 +308,7 @@ func TestDockerCommitAndConfinement(t *testing.T) {
 				if errorCode(r) != "not_found" {
 					t.Fatal(r)
 				}
-				for upload := range admin.ListIncompleteUploads(context.Background(), cfg.Bucket, cfg.Prefix, true) {
+				for upload := range admin.ListIncompleteUploads(context.Background(), cfg.Bucket, "", true) {
 					if upload.Err != nil {
 						t.Fatal(upload.Err)
 					}
@@ -323,7 +325,7 @@ func TestDockerCommitAndConfinement(t *testing.T) {
 	}
 }
 
-func TestDockerReplacementPaginationAndBudget(t *testing.T) {
+func TestDockerReplacementPaginationAndRate(t *testing.T) {
 	h, admin, cfg, _ := dockerFixture(t)
 	for _, key := range []string{"a", "b", "c", "folder/item"} {
 		data := []byte("original")
@@ -331,11 +333,7 @@ func TestDockerReplacementPaginationAndBudget(t *testing.T) {
 		result, _ := storageExchange(t, h, protocol.StreamHeader{Op: "put", Key: b64(key), Size: &size}, putFrames(data, false))
 		resultOK(t, result)
 	}
-	_, err := admin.PutObject(context.Background(), cfg.Bucket, "outside/object", strings.NewReader("hidden"), 6, minio.PutObjectOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = admin.PutObject(context.Background(), cfg.Bucket, cfg.Prefix+".eidonix-connector/hidden", strings.NewReader("hidden"), 6, minio.PutObjectOptions{})
+	_, err := admin.PutObject(context.Background(), cfg.Bucket, ".eidonix-connector/hidden", strings.NewReader("hidden"), 6, minio.PutObjectOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -363,7 +361,7 @@ func TestDockerReplacementPaginationAndBudget(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if strings.Contains(string(key), "hidden") || strings.HasPrefix(string(key), "outside/") {
+			if strings.Contains(string(key), "hidden") {
 				t.Fatal("namespace escaped")
 			}
 			if seen[string(key)] {
@@ -380,22 +378,11 @@ func TestDockerReplacementPaginationAndBudget(t *testing.T) {
 		t.Fatalf("pagination lost objects: %v", seen)
 	}
 	h.mu.Lock()
-	h.cfg.MaxReadPerHour = 8
-	h.reads = 0
-	h.mu.Unlock()
-	result, body := storageExchange(t, h, protocol.StreamHeader{Op: "get", Key: b64("a")}, nil)
-	resultOK(t, result)
-	decodeGet(t, body)
-	result, _ = storageExchange(t, h, protocol.StreamHeader{Op: "get", Key: b64("b")}, nil)
-	if errorCode(result) != "rate_limited" {
-		t.Fatalf("read budget bypass: %v", result)
-	}
-	h.mu.Lock()
 	h.tokens = 0
 	h.cfg.MaxOpsPerSecond = 0.000001
 	h.last = time.Now()
 	h.mu.Unlock()
-	result, _ = storageExchange(t, h, protocol.StreamHeader{Op: "head", Key: b64("a")}, nil)
+	result, _ := storageExchange(t, h, protocol.StreamHeader{Op: "head", Key: b64("a")}, nil)
 	if errorCode(result) != "rate_limited" {
 		t.Fatalf("op budget bypass: %v", result)
 	}
@@ -404,7 +391,7 @@ func TestDockerReplacementPaginationAndBudget(t *testing.T) {
 func TestDockerKeyBoundaryAndOversizeAbort(t *testing.T) {
 	h, admin, cfg, _ := dockerFixture(t)
 	key := strings.Repeat(strings.Repeat("k", 100)+"/", 10)
-	key += strings.Repeat("k", 1024-len(cfg.Prefix)-len(key))
+	key += strings.Repeat("k", protocol.MaxStorageKeyBytes-len(key))
 	size := int64(1)
 	result, _ := storageExchange(t, h, protocol.StreamHeader{Op: "put", Key: b64(key), Size: &size}, putFrames([]byte("x"), false))
 	resultOK(t, result)
@@ -422,10 +409,79 @@ func TestDockerKeyBoundaryAndOversizeAbort(t *testing.T) {
 	if errorCode(result) != "not_found" {
 		t.Fatal(result)
 	}
-	for upload := range admin.ListIncompleteUploads(context.Background(), cfg.Bucket, cfg.Prefix, true) {
+	for upload := range admin.ListIncompleteUploads(context.Background(), cfg.Bucket, "", true) {
 		if upload.Err != nil {
 			t.Fatal(upload.Err)
 		}
 		t.Fatal("oversize left multipart upload")
+	}
+}
+
+// TestDockerMoveToRoot: storage move-to-root copies SSE-C objects (and an
+// empty one) to the top of the bucket, refuses to overwrite, and removes the
+// originals only after every copy is verified.
+func TestDockerMoveToRoot(t *testing.T) {
+	h, admin, cfg, _ := dockerFixture(t)
+	moveProgressEvery = 2
+	files := map[string][]byte{"a.txt": []byte("alpha"), "dir/b.bin": bytes.Repeat([]byte("b"), (5<<20)+7), "empty": nil}
+	put := func(key string, data []byte) {
+		size := int64(len(data))
+		r, _ := storageExchange(t, h, protocol.StreamHeader{Op: "put", Key: b64(key), Size: &size}, putFrames(data, false))
+		resultOK(t, r)
+	}
+	for key, data := range files {
+		put("cletus/"+key, data)
+	}
+	put("keep.txt", []byte("stays"))
+	if _, err := admin.PutObject(context.Background(), cfg.Bucket, "cletus/", bytes.NewReader(nil), 0, minio.PutObjectOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	svc := config.Service{Name: "files", Kind: config.KindS3, MaxConcurrentRequests: 4, Storage: &cfg}
+	keys := func() []string {
+		out := []string{}
+		for o := range admin.ListObjects(context.Background(), cfg.Bucket, minio.ListObjectsOptions{Recursive: true}) {
+			if o.Err != nil {
+				t.Fatal(o.Err)
+			}
+			out = append(out, o.Key)
+		}
+		return out
+	}
+	before := strings.Join(keys(), ",")
+	var out strings.Builder
+	if err := MoveToRoot(context.Background(), svc, "cletus/", true, &out); err != nil || !strings.Contains(out.String(), "Dry run") || strings.Join(keys(), ",") != before {
+		t.Fatalf("dry run: %v\n%s", err, out.String())
+	}
+	put("a.txt", []byte("collides"))
+	out.Reset()
+	if err := MoveToRoot(context.Background(), svc, "cletus/", false, &out); err == nil || !strings.Contains(err.Error(), "1 destination keys already exist (a.txt)") {
+		t.Fatalf("collision: %v", err)
+	}
+	r, _ := storageExchange(t, h, protocol.StreamHeader{Op: "delete", Key: b64("a.txt")}, nil)
+	resultOK(t, r)
+	if strings.Join(keys(), ",") != before {
+		t.Fatal("refused move changed the bucket")
+	}
+	out.Reset()
+	if err := MoveToRoot(context.Background(), svc, "cletus/", false, &out); err != nil {
+		t.Fatalf("%v\n%s", err, out.String())
+	}
+	if got := strings.Join(keys(), ","); got != "a.txt,dir/b.bin,empty,keep.txt" {
+		t.Fatalf("after move: %s\n%s", got, out.String())
+	}
+	for key, data := range files {
+		r, body := storageExchange(t, h, protocol.StreamHeader{Op: "get", Key: b64(key)}, nil)
+		resultOK(t, r)
+		if !bytes.Equal(decodeGet(t, body), data) {
+			t.Fatalf("%s changed", key)
+		}
+	}
+	for _, want := range []string{"Bucket " + cfg.Bucket + ": 3 objects", "Copied 2/3.", "Copied 3/3.", "Verified 3 copies", "Removed 4/4 originals.", "Moved 3 objects from cletus/"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("missing %q in:\n%s", want, out.String())
+		}
+	}
+	if err := MoveToRoot(context.Background(), svc, "cletus", false, &out); err == nil {
+		t.Fatal("prefix without / accepted")
 	}
 }

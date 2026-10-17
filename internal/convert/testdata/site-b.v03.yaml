@@ -1,0 +1,39 @@
+# Converted to v0.3 by eidonix-connector convert.
+# Review the notes it printed, then run: eidonix-connector check
+
+site: example-plant
+upstream:
+  url: https://connect.example.com
+  token: cxn_abcdefghijklmnop_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+  public-keys: [AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=]
+  proxy: http://198.51.100.3:3128
+services:
+  glm: # was chat
+    address: 198.51.100.146:8000
+    allowed-endpoints: [POST /v1/*, GET /v1/models]
+    models:
+      GLM-5.3-Flash-NVFP4: {alias: GLM-5.3-Flash}
+    health: /health
+    api-key: sk-placeholder-chat
+    max-concurrent-requests: 64
+    idle-timeout: 15m
+  s3-storage: # was storage
+    kind: s3
+    address: https://198.51.100.81:9000
+    bucket: cletus-example
+    access-key: placeholder-access-key
+    secret-key: placeholder-secret-key
+    encryption: sse-c
+    encryption-key: MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=
+    ca-certificate: |
+      -----BEGIN CERTIFICATE-----
+      MIIBiDCCAS+gAwIBAgIUWF6kOB1ycy7Hz4uZD6DEPWrrUWgwCgYIKoZIzj0EAwIw
+      GjEYMBYGA1UEAwwPRXhhbXBsZSBUZXN0IENBMB4XDTI2MTAxNjEyNDg1NFoXDTM2
+      MTAxMzEyNDg1NFowGjEYMBYGA1UEAwwPRXhhbXBsZSBUZXN0IENBMFkwEwYHKoZI
+      zj0CAQYIKoZIzj0DAQcDQgAENxXJjD+SmA9aahgSa2hZJspwlwyPwd+EOf2nSIY2
+      VifHSUBUqjGaUbDdGB6NmlfdcCdndH9X++hASMaw8DWqyKNTMFEwHQYDVR0OBBYE
+      FEcn+qp6iY9mwjpMuLy0k8xxOeZrMB8GA1UdIwQYMBaAFEcn+qp6iY9mwjpMuLy0
+      k8xxOeZrMA8GA1UdEwEB/wQFMAMBAf8wCgYIKoZIzj0EAwIDRwAwRAIgOevL2QBb
+      OP5Tgm6Wefh/bo2cZ98Z3B/npA+LFMNlnd4CIBhHMWhVYdWbDtySglGO/6LocyLm
+      OWjjxi0IWo5J/bbT
+      -----END CERTIFICATE-----

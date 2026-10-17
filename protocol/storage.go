@@ -36,12 +36,14 @@ const (
 	MaxStorageParts                   = 10000
 )
 
-// StorageService is the storage block of an advertised storage service.
-// Encryption is the owner's choice: none, sse-s3, sse-kms or sse-c.
+// StorageService is the storage block of an advertised s3 service.
+// Encryption is the owner's choice: none, sse-s3 or sse-c. ReadOnly services
+// refuse put, delete and copy.
 type StorageService struct {
 	MaxKeyBytes    int    `json:"max_key_bytes"`
 	MaxObjectBytes int64  `json:"max_object_bytes"`
 	Encryption     string `json:"encryption"`
+	ReadOnly       bool   `json:"read_only"`
 }
 
 // ReservedKeySegment is the first key segment reserved for connector-local probes.

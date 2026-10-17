@@ -78,23 +78,25 @@ func TestCheckExampleGolden(t *testing.T) {
 func TestCheckRedactedHidesSecrets(t *testing.T) {
 	secrets := []string{"sk-SENTINEL-api-key", "SENTINEL-access-key", "SENTINEL-secret-key", "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=", "cxn_abcdefghijklmnop_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}
 	data := `# Example server
+site: example-site
 upstream:
   url: https://connect.example.com
   token: ` + secrets[4] + `
-  public_keys: [AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=]
-chat:
-  - name: gpu1
-    url: http://10.0.0.5:8000   # the big card
+  public-keys: [AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=]
+services:
+  gpu1:
+    address: 192.0.2.5:8000   # the big card
+    allowed-endpoints: [POST /v1/*]
     models: [model-a]
-    api_key: ` + secrets[0] + `
-storage:
-  - name: files
-    endpoint: https://s3.example.com
+    api-key: ` + secrets[0] + `
+  files:
+    kind: s3
+    address: https://s3.example.com
     bucket: cletus
-    prefix: cletus/
-    access_key: ` + secrets[1] + `
-    secret_key: ` + secrets[2] + `
-    encryption_key: ` + secrets[3] + `
+    access-key: ` + secrets[1] + `
+    secret-key: ` + secrets[2] + `
+    encryption: sse-c
+    encryption-key: ` + secrets[3] + `
 `
 	path := writeConfig(t, []byte(data))
 	var out bytes.Buffer
@@ -106,7 +108,7 @@ storage:
 			t.Fatalf("secret %q in:\n%s", s, out.String())
 		}
 	}
-	for _, want := range []string{"# Example server", "# the big card", "api_key: •••• (set)", "token: •••• (set)", "public_keys: [AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=]"} {
+	for _, want := range []string{"# Example server", "# the big card", "api-key: •••• (set)", "token: •••• (set)", "public-keys: [AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=]"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("missing %q in:\n%s", want, out.String())
 		}
@@ -139,7 +141,7 @@ func TestInitWritesTemplateOnce(t *testing.T) {
 	// The blank template fails check only because of the placeholders.
 	os.Chmod(path, 0600)
 	err = execute([]string{"check", "--config", path}, &out, &errs, os.Geteuid())
-	if err == nil || !strings.Contains(err.Error(), "token is not a connection token") {
+	if err == nil || !strings.Contains(err.Error(), "must be the connector's name in Eidonix Setup") {
 		t.Fatal(err)
 	}
 }
@@ -155,14 +157,54 @@ func TestGenerateKey(t *testing.T) {
 }
 func TestConvertCommand(t *testing.T) {
 	var out, errs bytes.Buffer
-	if err := execute([]string{"convert", "../../internal/convert/testdata/v01/config.toml"}, &out, &errs, 1000); err != nil {
+	if err := execute([]string{"convert", "../../internal/convert/testdata/site-b.v02.yaml", "--site", "example-plant"}, &out, &errs, 1000); err != nil {
 		t.Fatal(err)
 	}
-	want, _ := os.ReadFile("../../internal/convert/testdata/v02.yaml")
-	if out.String() != string(want) || !strings.HasPrefix(errs.String(), "Review before use:\n  - ") || !strings.Contains(errs.String(), "not carried: POST /v1/score") {
+	want, _ := os.ReadFile("../../internal/convert/testdata/site-b.v03.yaml")
+	if out.String() != string(want) || !strings.HasPrefix(errs.String(), "Review before use:\n  - ") || !strings.Contains(errs.String(), "eidonix-connector storage move-to-root s3-storage --from cletus/") {
 		t.Fatalf("stdout:\n%s\nstderr:\n%s", out.String(), errs.String())
 	}
-	if execute([]string{"convert"}, &out, &errs, 1000) == nil {
+	out.Reset()
+	if err := execute([]string{"convert", "--site", "example-gpu-site", "../../internal/convert/testdata/v01/config.toml"}, &out, &errs, 1000); err != nil {
+		t.Fatal(err)
+	}
+	if want, _ := os.ReadFile("../../internal/convert/testdata/v01.v03.yaml"); out.String() != string(want) {
+		t.Fatal(out.String())
+	}
+	if err := execute([]string{"convert", "../../internal/convert/testdata/site-b.v02.yaml"}, &out, &errs, 1000); err == nil || !strings.Contains(err.Error(), "--site") {
+		t.Fatal(err)
+	}
+	if execute([]string{"convert", "--site", "x"}, &out, &errs, 1000) == nil {
 		t.Fatal("convert without a file accepted")
+	}
+}
+
+// TestOldConfigPointsToConvert: run and check refuse a v0.2 file and say how to convert it.
+func TestOldConfigPointsToConvert(t *testing.T) {
+	old, _ := os.ReadFile("../../internal/convert/testdata/site-a.v02.yaml")
+	path := writeConfig(t, old)
+	var out bytes.Buffer
+	err := execute([]string{"check", "--config", path}, &out, &out, os.Geteuid())
+	if err == nil || !strings.Contains(err.Error(), "v0.2 configuration") || !strings.Contains(err.Error(), "eidonix-connector convert --site") {
+		t.Fatal(err)
+	}
+}
+func TestStorageCommandArguments(t *testing.T) {
+	path := writeConfig(t, []byte("site: example-site\nupstream:\n  url: https://connect.example.com\n  token: cxn_abcdefghijklmnop_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n  public-keys: [AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=]\nservices:\n  gpu1:\n    address: 192.0.2.5:8000\n    allowed-endpoints: [POST /v1/*]\n"))
+	var out bytes.Buffer
+	for args, want := range map[string]string{
+		"storage move-to-root files":                "needs --from",
+		"storage move-to-root files --from cletus/": "has no service \"files\"",
+		"storage move-to-root gpu1 --from cletus/":  "not an s3 service",
+		"storage copy files --from cletus/":         "unexpected arguments",
+		"storage move-to-root --from cletus/":       "unexpected arguments",
+		"check --from cletus/":                      "apply to storage move-to-root only",
+		"check --site x":                            "applies to convert only",
+		"storage move-to-root a b --from cletus/":   "unexpected arguments",
+	} {
+		err := execute(append(strings.Fields(args), "--config", path), &out, &out, os.Geteuid())
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%s: %v", args, err)
+		}
 	}
 }

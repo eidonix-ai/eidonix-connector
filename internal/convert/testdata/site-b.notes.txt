@@ -1,0 +1,3 @@
+glm: POST /v1/* allows every POST under /v1 (v0.2 allowed only chat/completions and responses)
+glm: GET /v1/models now reaches the server, which lists its own model names (not the aliases)
+s3-storage: v0.3 has no storage folder; Eidonix uses the whole bucket cletus-example. The files are under cletus/: with the connector stopped, move them to the top of the bucket with: eidonix-connector storage move-to-root s3-storage --from cletus/

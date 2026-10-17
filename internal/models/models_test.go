@@ -191,16 +191,6 @@ type failWriter struct{ err error }
 
 func (f failWriter) Write([]byte) (int, error) { return 0, f.err }
 
-func TestModelList(t *testing.T) {
-	var got struct {
-		Object string
-		Data   []struct{ ID, Object string }
-	}
-	if err := json.Unmarshal(policy.ModelList(), &got); err != nil || got.Object != "list" || len(got.Data) != 3 || got.Data[0].ID != "jina-reranker" || got.Data[2].ID != "plain" {
-		t.Fatal(got, err)
-	}
-}
-
 func FuzzRewriteJSON(f *testing.F) {
 	for _, s := range []string{`{"model":"jina-reranker"}`, `{"model":"x","model":"y"}`, `{"a":[1,{"model":"whisper"}],"model":"whisper"}`, `[]`, `"s"`, `{"model":1}`, `{}`} {
 		f.Add([]byte(s))

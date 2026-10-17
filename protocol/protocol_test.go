@@ -49,12 +49,13 @@ func TestGoldenHeader(t *testing.T) {
 		t.Fatal(h, e)
 	}
 }
-func TestStreamHeaderRejectsV1AndBadMetadata(t *testing.T) {
+func TestStreamHeaderRejectsOldVersionsAndBadMetadata(t *testing.T) {
 	for _, line := range []string{
 		`{"v":1,"route":"chat","kind":"http"}`,
-		`{"v":2,"route":"chat","kind":"http"}`,
-		`{"v":2,"service":"chat","kind":"http","org_slug":"a\nb"}`,
-		`{"v":2,"service":"chat","kind":"http","user_key_id":"` + strings.Repeat("1", MaxStreamMetadataBytes+1) + `"}`,
+		`{"v":2,"service":"chat","kind":"http"}`,
+		`{"v":3,"route":"chat","kind":"http"}`,
+		`{"v":3,"service":"chat","kind":"http","org_slug":"a\nb"}`,
+		`{"v":3,"service":"chat","kind":"http","user_key_id":"` + strings.Repeat("1", MaxStreamMetadataBytes+1) + `"}`,
 	} {
 		if _, e := ReadStreamHeader(bufio.NewReader(strings.NewReader(line + "\n"))); e == nil {
 			t.Fatalf("accepted %s", line)
@@ -62,7 +63,7 @@ func TestStreamHeaderRejectsV1AndBadMetadata(t *testing.T) {
 	}
 }
 func TestBoundAndReadAhead(t *testing.T) {
-	r := bufio.NewReader(strings.NewReader("{\"v\":2,\"service\":\"r\",\"kind\":\"http\"}\nPOST /x HTTP/1.1\r\n"))
+	r := bufio.NewReader(strings.NewReader("{\"v\":3,\"service\":\"r\",\"kind\":\"http\"}\nPOST /x HTTP/1.1\r\n"))
 	if _, e := ReadStreamHeader(r); e != nil {
 		t.Fatal(e)
 	}
@@ -75,7 +76,7 @@ func TestBoundAndReadAhead(t *testing.T) {
 	}
 }
 
-// identityVector is the fixed v2 signature vector in testdata/identity-vector.json.
+// identityVector is the fixed v3 signature vector in testdata/identity-vector.json.
 type identityVector struct {
 	Seed       string `json:"ed25519_seed_hex"`
 	PublicKey  string `json:"public_key"`
@@ -104,7 +105,7 @@ func TestIdentityVector(t *testing.T) {
 	if want != v {
 		t.Fatalf("identity vector changed:\n%s", encoded)
 	}
-	if !strings.HasPrefix(want.Payload, "eidonix-connector.v2|") || len(want.KeyID) != len("eidonix-")+8 {
+	if !strings.HasPrefix(want.Payload, "eidonix-connector.v3|") || len(want.KeyID) != len("eidonix-")+8 {
 		t.Fatal(want)
 	}
 	h := http.Header{}
@@ -164,10 +165,10 @@ func TestControlGolden(t *testing.T) {
 		Auth{V: Version, Type: MessageAuth, Token: "cxn_abcdefghijklmnop_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"},
 		AuthResult{V: Version, Type: MessageAuthOK, SessionID: "s-1", Org: "Example Org"},
 		AuthResult{V: Version, Type: MessageAuthFailed, Reason: "invalid_token"},
-		Hello{V: Version, Type: MessageHello, InstanceID: "00000000-0000-4000-8000-000000000001", Version: "0.2.0", OS: "linux", Arch: "amd64", Capabilities: []string{CapabilityInference, CapabilityStorage}, Services: []Service{
-			{Name: "gpu1", Type: TypeChat, Models: []string{"model-a"}, MaxConcurrentRequests: 32, Healthy: true},
-			{Name: "embed", Type: TypeEmbeddings, Models: []string{}, ModelsAny: true, MaxConcurrentRequests: 32},
-			{Name: "files", Type: TypeStorage, Models: []string{}, MaxConcurrentRequests: 16, Storage: &StorageService{MaxKeyBytes: 1017, MaxObjectBytes: MaxStorageObjectBytes, Encryption: "sse-c"}},
+		Hello{V: Version, Type: MessageHello, Site: "example-site", InstanceID: "00000000-0000-4000-8000-000000000001", Version: "0.3.0", OS: "linux", Arch: "amd64", Capabilities: []string{CapabilityInference, CapabilityStorage}, Services: []Service{
+			{Name: "gpu1", Kind: KindHTTP, Endpoints: []string{"POST /v1/*", "GET /v1/models"}, Models: []string{"model-a"}, MaxConcurrentRequests: 32, Healthy: true},
+			{Name: "embed", Kind: KindHTTP, Endpoints: []string{"POST /embeddings"}, MaxConcurrentRequests: 16},
+			{Name: "files", Kind: KindS3, MaxConcurrentRequests: 16, Storage: &StorageService{MaxKeyBytes: 1023, MaxObjectBytes: MaxStorageObjectBytes, Encryption: "sse-c", ReadOnly: true}},
 		}},
 		HelloAck{V: Version, Type: MessageHelloAck, Accepted: []string{"gpu1", "files"}, Rejected: []Rejected{{Name: "embed", Reason: "unknown_service"}}, Limits: Limits{MaxStreams: 64}},
 		Status{V: Version, Type: MessageStatus, Services: []ServiceStatus{{Name: "gpu1", Healthy: true, InFlight: 2, Models: []string{"model-a"}}, {Name: "embed", Models: []string{}}}, UptimeS: 60},
@@ -209,7 +210,7 @@ func TestStatusAlwaysEncodesModels(t *testing.T) {
 	}
 }
 func TestReadMessageRejectsOtherVersions(t *testing.T) {
-	for _, line := range []string{`{"v":1,"type":"hello"}`, `{"v":2}`, `{"v":3,"type":"ping"}`} {
+	for _, line := range []string{`{"v":1,"type":"hello"}`, `{"v":2,"type":"ping"}`, `{"v":3}`, `{"v":4,"type":"ping"}`} {
 		if _, e := ReadMessage(bufio.NewReader(strings.NewReader(line + "\n"))); e == nil {
 			t.Fatal(line)
 		}
@@ -240,7 +241,7 @@ func TestFrames(t *testing.T) {
 	}
 }
 func FuzzHeader(f *testing.F) {
-	f.Add([]byte("{\"v\":2,\"service\":\"r\",\"kind\":\"http\"}\n"))
+	f.Add([]byte("{\"v\":3,\"service\":\"r\",\"kind\":\"http\"}\n"))
 	f.Fuzz(func(t *testing.T, b []byte) { ReadStreamHeader(bufio.NewReader(bytes.NewReader(b))) })
 }
 func FuzzFrame(f *testing.F) {
@@ -248,7 +249,7 @@ func FuzzFrame(f *testing.F) {
 	f.Fuzz(func(t *testing.T, b []byte) { ReadFrame(bytes.NewReader(b), 4096) })
 }
 func FuzzControl(f *testing.F) {
-	f.Add([]byte("{\"v\":2,\"type\":\"ping\"}\n"))
+	f.Add([]byte("{\"v\":3,\"type\":\"ping\"}\n"))
 	f.Fuzz(func(t *testing.T, b []byte) { ReadMessage(bufio.NewReader(bytes.NewReader(b))) })
 }
 func FuzzToken(f *testing.F) {

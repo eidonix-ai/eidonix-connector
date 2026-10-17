@@ -37,7 +37,7 @@ func main() {
 func run() error {
 	dir := flag.String("state", "./dev-state", "local development keys and config directory")
 	init := flag.Bool("init", false, "create development keys, token, and connector config, then exit")
-	upstream := flag.String("upstream", "http://127.0.0.1:8000", "chat server for the generated connector config")
+	upstream := flag.String("upstream", "127.0.0.1:8000", "chat server address (host:port or https://host:port) for the generated connector config")
 	listen := flag.String("listen", "127.0.0.1:8443", "loopback TLS address")
 	flag.Parse()
 	abs, err := filepath.Abs(*dir)
@@ -63,6 +63,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	g.Site = "local-test"
 	defer g.Close()
 	server := &http.Server{Addr: *listen, Handler: g, ReadHeaderTimeout: 10 * time.Second, MaxHeaderBytes: 64 << 10, TLSConfig: &tls.Config{MinVersion: tls.VersionTLS12}}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -112,11 +113,11 @@ func initialize(dir, upstream, listen string) error {
 	token := "cxn_" + strings.ToLower(base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(id)) + "_" + base64.RawURLEncoding.EncodeToString(secret)
 	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert})
 	var cfg bytes.Buffer
-	fmt.Fprintf(&cfg, "# Development only: trusts this local test gateway, never a real upstream.\nupstream:\n  url: https://%s\n  token: %s\n  public_keys:\n    - %s\n  ca_certificate: |\n", listen, token, base64.StdEncoding.EncodeToString(pub))
+	fmt.Fprintf(&cfg, "# Development only: trusts this local test gateway, never a real upstream.\nsite: local-test\nupstream:\n  url: https://%s\n  token: %s\n  public-keys: [%s]\n  ca-certificate: |\n", listen, token, base64.StdEncoding.EncodeToString(pub))
 	for _, line := range strings.Split(strings.TrimSpace(string(certPEM)), "\n") {
 		fmt.Fprintf(&cfg, "    %s\n", line)
 	}
-	fmt.Fprintf(&cfg, "chat:\n  - name: chat\n    url: %s\n    models: any\naccess_log: %s\n", upstream, filepath.Join(dir, "access.log"))
+	fmt.Fprintf(&cfg, "access-log: %s\nservices:\n  chat:\n    address: %s\n    allowed-endpoints: [POST /v1/*, GET /v1/models]\n", filepath.Join(dir, "access.log"), upstream)
 	if _, err := config.Parse(cfg.Bytes()); err != nil {
 		return fmt.Errorf("generated config: %w", err)
 	}

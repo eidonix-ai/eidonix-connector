@@ -13,27 +13,25 @@ import (
 	"time"
 
 	"github.com/eidonix-ai/eidonix-connector/internal/config"
-	"github.com/eidonix-ai/eidonix-connector/internal/servicetype"
 	"github.com/eidonix-ai/eidonix-connector/protocol"
 )
 
 func TestStorageDispatchAndPrivateAdvertisement(t *testing.T) {
 	st := config.StorageDefaults()
-	st.Endpoint, st.Bucket, st.Prefix, st.AccessKey, st.SecretKey, st.EncryptionKey = "https://storage.corp.example", "private-bucket-sentinel", "documents/", "private-access-sentinel", "private-secret-sentinel", []byte("0123456789abcdef0123456789abcdef")
-	files := config.Service{Name: "files", Type: protocol.TypeStorage, MaxConcurrentRequests: 16, Storage: &st}
-	chatType, _ := servicetype.Lookup(protocol.TypeChat)
-	x := &Connector{services: map[string]*service{"files": {cfg: files}, "chat": {cfg: config.Service{Name: "chat", Type: protocol.TypeChat}, typ: chatType}}, order: []string{"files", "chat"}}
+	st.Endpoint, st.Bucket, st.AccessKey, st.SecretKey, st.EncryptionKey, st.Encryption, st.ReadOnly = "https://storage.corp.example", "private-bucket-sentinel", "private-access-sentinel", "private-secret-sentinel", []byte("0123456789abcdef0123456789abcdef"), "sse-c", true
+	files := config.Service{Name: "files", Kind: config.KindS3, MaxConcurrentRequests: 16, Storage: &st}
+	x := &Connector{services: map[string]*service{"files": {cfg: files}, "chat": {cfg: config.Service{Name: "chat", Kind: config.KindHTTP}}}, order: []string{"files", "chat"}}
 	encoded, err := json.Marshal(x.HelloServices())
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, secret := range []string{st.Bucket, st.Prefix, st.Endpoint, st.AccessKey, st.SecretKey, string(st.EncryptionKey)} {
+	for _, secret := range []string{st.Bucket, st.Endpoint, st.AccessKey, st.SecretKey, string(st.EncryptionKey)} {
 		if strings.Contains(string(encoded), secret) {
 			t.Fatal("private configuration advertised")
 		}
 	}
 	svc := x.HelloServices()[0]
-	if svc.Type != protocol.TypeStorage || svc.Storage == nil || svc.Storage.MaxKeyBytes != 1024-len(st.Prefix) || svc.Storage.MaxObjectBytes != 5<<30 || svc.Storage.Encryption != "sse-c" || svc.Healthy || svc.MaxConcurrentRequests != 16 {
+	if svc.Kind != protocol.KindS3 || svc.Storage == nil || svc.Storage.MaxKeyBytes != protocol.MaxStorageKeyBytes || svc.Storage.MaxObjectBytes != 5<<30 || svc.Storage.Encryption != "sse-c" || !svc.Storage.ReadOnly || svc.Healthy || svc.MaxConcurrentRequests != 16 || len(svc.Endpoints) != 0 {
 		t.Fatal(svc)
 	}
 	for _, tc := range []struct{ kind, service, want string }{{"future", "chat", "unsupported_kind"}, {"storage", "missing", "route_not_found"}, {"storage", "chat", "wrong_route_type"}, {"storage", "files", "backend_unavailable"}} {
@@ -73,7 +71,7 @@ func TestStorageInitializationFailureKeepsInferenceAvailable(t *testing.T) {
 	defer cancel()
 	st := config.StorageDefaults()
 	st.Endpoint = "invalid"
-	storageService := &service{cfg: config.Service{Name: "files", Type: protocol.TypeStorage, Storage: &st}}
+	storageService := &service{cfg: config.Service{Name: "files", Kind: config.KindS3, Storage: &st}}
 	x.mu.Lock()
 	x.services["files"] = storageService
 	x.order = append(x.order, "files")

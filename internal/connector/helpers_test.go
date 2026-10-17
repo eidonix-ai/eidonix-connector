@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -19,25 +20,31 @@ import (
 )
 
 // Synthetic placeholder credentials used only by tests.
-const upstreamYAML = `upstream:
+const upstreamYAML = `site: test-site
+upstream:
   url: https://connect.example.com
   token: cxn_abcdefghijklmnop_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
-  public_keys: [AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=]
+  public-keys: [AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=]
+services:
 `
 
-// testConfig parses services YAML (with %s replaced by origin) and points the
-// access log at a temporary file.
+// testConfig parses services YAML (with %s replaced by origin as an address:
+// host:port for http://, unchanged for https://) and points the access log at
+// a temporary file.
 func testConfig(t testing.TB, services, origin string) *config.Config {
 	t.Helper()
-	c, err := config.Parse([]byte(upstreamYAML + fmt.Sprintf(services, origin)))
+	c, err := config.Parse([]byte(upstreamYAML + fmt.Sprintf(services, strings.TrimPrefix(origin, "http://"))))
 	if err != nil {
 		t.Fatal(err)
 	}
 	c.AccessLog = filepath.Join(t.TempDir(), "access.log")
 	return c
 }
+// chatEndpoints is what Eidonix uses of an OpenAI-compatible chat server.
+const chatEndpoints = "[POST /v1/chat/completions, POST /v1/responses, GET /v1/models]"
+
 func chatConfig(t testing.TB, origin string) *config.Config {
-	return testConfig(t, "chat:\n  - name: chat\n    url: %s\n    models: any\n", origin)
+	return testConfig(t, "  chat:\n    address: %s\n    allowed-endpoints: "+chatEndpoints+"\n", origin)
 }
 func newConnector(t testing.TB, c *config.Config) *Connector {
 	t.Helper()
