@@ -126,10 +126,10 @@ const acceptanceServices = `  chat:
     address: %[1]s
     allowed-endpoints: [POST /v1/*]
     max-concurrent-requests: 1
-  claude:
+  messages-api:
     address: %[1]s
     allowed-endpoints: [POST /v1/messages, POST /v1/messages/count_tokens]
-    models: [claude-local]
+    models: [messages-local]
   embed:
     address: %[1]s
     allowed-endpoints: [POST /embeddings]
@@ -225,7 +225,7 @@ func TestAcceptanceEveryServiceOverV3Session(t *testing.T) {
 	for _, tc := range []struct{ service, method, path, ct, body, want string }{
 		{"chat", "POST", "/v1/chat/completions", "application/json", `{"model":"chat-large"}`, "POST /v1/chat/completions model=server/chat-large-v2"},
 		{"chat", "POST", "/v1/responses", "application/json", `{"model":"chat-small"}`, "POST /v1/responses model=chat-small"},
-		{"claude", "POST", "/v1/messages", "application/json", `{"max_tokens":1}`, "POST /v1/messages model=claude-local"},
+		{"messages-api", "POST", "/v1/messages", "application/json", `{"max_tokens":1}`, "POST /v1/messages model=messages-local"},
 		{"embed", "POST", "/embeddings", "application/json", `{"model":"nomic-embed","input":"x"}`, "POST /embeddings model=nomic-ai/nomic-embed-text-v1.5"},
 		{"rerank", "POST", "/v1/rerank", "application/json", `{"model":"jina-reranker"}`, "POST /v1/rerank model=jina-reranker"},
 		{"stt", "POST", "/v1/audio/transcriptions", audioType, audio, "POST /v1/audio/transcriptions model=/models/whisper-large"},
@@ -257,7 +257,7 @@ func TestAcceptanceEveryServiceOverV3Session(t *testing.T) {
 		{"chat", "/v1/chat/completions", `{"model":"gpt-unknown"}`, "model_not_allowed"},
 		{"chat", "/v1/chat/completions", `{"messages":[]}`, "model_required"},
 		{"chat", "/v2/completions", `{"model":"chat-large"}`, "path_not_allowed"},
-		{"claude", "/v1/complete", `{"model":"claude-local"}`, "path_not_allowed"},
+		{"messages-api", "/v1/complete", `{"model":"messages-local"}`, "path_not_allowed"},
 		{"embed", "/v1/embeddings", `{"model":"nomic-embed"}`, "path_not_allowed"},
 		{"tool", "/v1/other", `{}`, "path_not_allowed"},
 	} {

@@ -341,7 +341,7 @@ func TestAllowedEndpoints(t *testing.T) {
     address: %s
     allowed-endpoints: [POST /v1/*, GET /v1/models]
     api-key: sk-local
-  claude:
+  messages-api:
     address: %[1]s
     allowed-endpoints: [POST /v1/messages, POST /v1/messages/count_tokens]
   voice:
@@ -363,10 +363,10 @@ func TestAllowedEndpoints(t *testing.T) {
 		{"chat", get("/v1/chat/completions"), false},
 		{"chat", post("/v2/chat", "application/json", "{}"), false},
 		{"chat", get("/metrics"), false},
-		{"claude", post("/v1/messages", "application/json", "{}"), true},
-		{"claude", post("/v1/messages/count_tokens", "application/json", "{}"), true},
-		{"claude", post("/v1/messages/batches", "application/json", "{}"), false},
-		{"claude", post("/v1/chat/completions", "application/json", "{}"), false},
+		{"messages-api", post("/v1/messages", "application/json", "{}"), true},
+		{"messages-api", post("/v1/messages/count_tokens", "application/json", "{}"), true},
+		{"messages-api", post("/v1/messages/batches", "application/json", "{}"), false},
+		{"messages-api", post("/v1/chat/completions", "application/json", "{}"), false},
 		{"voice", get("/v1/config"), true},
 		{"voice", get("/v1/stream"), false},
 		{"tool", post("/v1/run", "application/json", "{}"), true},
@@ -392,7 +392,7 @@ func TestAllowedEndpoints(t *testing.T) {
 	if auth != "Bearer sk-local" || anthropic != "1" || cookie != "" {
 		t.Fatal(auth, anthropic, cookie)
 	}
-	exchange(t, x, "claude", strings.Replace(req, "/v1/chat/completions", "/v1/messages", 1))
+	exchange(t, x, "messages-api", strings.Replace(req, "/v1/chat/completions", "/v1/messages", 1))
 	f.mu.Lock()
 	auth, anthropic = f.auth, f.headers.Get("Anthropic-Version")
 	f.mu.Unlock()
