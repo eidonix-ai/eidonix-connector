@@ -35,7 +35,7 @@ const (
 )
 
 // ErrOldFormat reports a v0.2 file (services grouped by type).
-var ErrOldFormat = errors.New("this is a v0.2 configuration (services grouped by type); v0.3 lists services by name under services:")
+var ErrOldFormat = errors.New("this is a v0.2 configuration (services grouped by type); v0.3 lists services by name, under services")
 
 // Config is a validated configuration. Services are in file order.
 type Config struct {
