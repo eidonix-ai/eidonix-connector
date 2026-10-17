@@ -21,7 +21,7 @@ storage:
     prefix: cletus/
     access_key: placeholder-access-key
     secret_key: placeholder-secret-key
-    encryption_key: MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=
+    encryption_key: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
     ca_certificate: |
       -----BEGIN CERTIFICATE-----
       MIIBiDCCAS+gAwIBAgIUWF6kOB1ycy7Hz4uZD6DEPWrrUWgwCgYIKoZIzj0EAwIw

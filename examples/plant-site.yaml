@@ -23,7 +23,7 @@ services:
     access-key: placeholder-access-key
     secret-key: placeholder-secret-key
     encryption: sse-c
-    encryption-key: MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=   # placeholder; make one with eidonix-connector generate-key, and back it up
+    encryption-key: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=   # placeholder; make one with eidonix-connector generate-key, and back it up
     # ca-certificate: |               # if the store uses its own certificate
     #   -----BEGIN CERTIFICATE-----
     #   …

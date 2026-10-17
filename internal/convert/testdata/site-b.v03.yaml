@@ -24,7 +24,7 @@ services:
     access-key: placeholder-access-key
     secret-key: placeholder-secret-key
     encryption: sse-c
-    encryption-key: MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=
+    encryption-key: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
     ca-certificate: |
       -----BEGIN CERTIFICATE-----
       MIIBiDCCAS+gAwIBAgIUWF6kOB1ycy7Hz4uZD6DEPWrrUWgwCgYIKoZIzj0EAwIw
