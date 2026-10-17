@@ -1,6 +1,47 @@
 # Changelog
 
-## 0.2.0 (unreleased)
+## 0.3.0 (unreleased)
+
+**Breaking: sites and services instead of types; protocol v3.** Convert a
+v0.2 file with `eidonix-connector convert --site <name in Setup>
+/etc/eidonix-connector/connector.yaml` and review the notes it prints (see
+[installation](docs/INSTALL.md#upgrading-from-v02)).
+
+- **The connector only exposes resources.** Services are listed by name
+  under `services:`, each with an `address` (`host:port` for plain HTTP or
+  `https://host:port`) and the `allowed-endpoints` it accepts
+  (`METHOD /path`, a final `/*` matching everything below; `GET`, `POST`,
+  `PUT`, `DELETE`, `WEBSOCKET`). Gone: the 12 service types and their request
+  tables and content-type rules, `api_path` rewriting, `models: any`
+  discovery, the connector's own `GET /v1/models` answer and `urls:` load
+  spreading.
+- **`site`**: the connector's name in Setup, sent in hello; Eidonix closes a
+  session whose site does not match (`site_mismatch`).
+- **Keys are lowercase with dashes** (`public-keys`, `api-key`,
+  `max-concurrent-requests`, `access-log`, …); `proxy_url` is `proxy`.
+- **Models** are a list or `<name on the server>: {alias: <name Eidonix
+  uses>}`. With models set, POST/PUT bodies must be JSON or multipart and
+  their model is checked and rewritten; without models, bodies are not read.
+- **Health** is `GET <health>` every 15 s when set, otherwise a TCP
+  reachability check.
+- Defaults: 16 concurrent requests, 5 minute idle timeout, no rate limit,
+  100 MiB requests. `Anthropic-Version` and `Anthropic-Beta` are forwarded to
+  any service.
+- **Storage** is `kind: s3` and uses the whole bucket (no `prefix`);
+  `encryption` is `none` (default), `sse-s3` or `sse-c`; `read-only` refuses
+  put, delete and copy. `sse-kms`, `kms_key_id`, `allow_http` (now the address
+  scheme) and `max_read_per_hour` are gone.
+- **`eidonix-connector storage move-to-root SERVICE --from FOLDER/`** moves a
+  v0.2 folder's files to the top of the bucket server-side (SSE-C key from the
+  file), verifies every copy, then removes the originals; it never
+  overwrites. `--dry-run` previews.
+- **Protocol v3** (`eidonix-connector.v3`): `hello.site`; services carry
+  `kind` (`http`|`s3`), `endpoints` and `models` instead of `type` and
+  `models_any`; storage advertises `read_only`. The identity signature covers
+  the v3 subprotocol name. Everything else is unchanged from v2.
+- The access log's `type` field is now `kind`.
+
+## 0.2.0
 
 **Breaking: new name, new configuration format, new protocol version.**
 Convert an existing configuration with

@@ -18,6 +18,6 @@ sha256sum /usr/bin/eidonix-connector
 cat /tmp/root-refusal
 grep -q 'refusing to run as root' /tmp/root-refusal
 ! su -s /bin/sh eidonix-connector -c 'eidonix-connector check' 2>/tmp/template
-grep -q 'token is not a connection token' /tmp/template
+grep -q "must be the connector's name in Eidonix Setup" /tmp/template
 printf '%s\n' 'PASS package installation/user/config ownership/root refusal/template refused/no enable symlink'
 printf '%s\n' 'NOT RUN real systemd runtime, capabilities/listeners under running service'

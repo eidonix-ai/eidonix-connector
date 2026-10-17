@@ -15,8 +15,8 @@ eidonix-connector version
 ! su -s /bin/sh eidonix-connector -c 'eidonix-connector check'
 # Development gateway on loopback; its generated file replaces the template.
 chmod 0755 /tmp/test-gateway
-/tmp/test-gateway --init --state /root/dev-test --upstream http://127.0.0.1:8000
-sed 's|^access_log: .*|access_log: /var/log/eidonix-connector/access.log|' /root/dev-test/connector.yaml > /etc/eidonix-connector/connector.yaml
+/tmp/test-gateway --init --state /root/dev-test --upstream 127.0.0.1:8000
+sed 's|^access-log: .*|access-log: /var/log/eidonix-connector/access.log|' /root/dev-test/connector.yaml > /etc/eidonix-connector/connector.yaml
 chown root:eidonix-connector /etc/eidonix-connector/connector.yaml
 chmod 0640 /etc/eidonix-connector/connector.yaml
 su -s /bin/sh eidonix-connector -c 'eidonix-connector check'

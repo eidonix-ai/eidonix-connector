@@ -17,7 +17,7 @@ repository.
 Alpine (for example a small LXC container):
 
 ```sh
-apk add --allow-untrusted ./eidonix-connector_0.2.0_amd64.apk   # after sha256sum -c
+apk add --allow-untrusted ./eidonix-connector_0.3.0_amd64.apk   # after sha256sum -c
 ```
 
 The `.apk` is not signed with an apk key; its integrity comes from the
@@ -26,22 +26,24 @@ verified checksums, which is why `--allow-untrusted` is needed.
 Debian / Ubuntu:
 
 ```sh
-sudo apt install ./eidonix-connector_0.2.0_amd64.deb
+sudo apt install ./eidonix-connector_0.3.0_amd64.deb
 ```
 
 Fedora / RHEL / Rocky / Alma:
 
 ```sh
-sudo dnf install ./eidonix-connector_0.2.0_amd64.rpm
+sudo dnf install ./eidonix-connector_0.3.0_amd64.rpm
 ```
 
 ## 2. Fill in the configuration
 
 Edit `/etc/eidonix-connector/connector.yaml` (see [configuration](CONFIG.md)):
 
-1. Paste the `upstream:` block Eidonix Setup shows when it issues the
-   connector's token (url, token, public keys).
-2. Add the services this machine shares, by type.
+1. Set `site` to the connector's name in Eidonix Setup, and paste the
+   `upstream:` block Setup shows when it issues the connector's token (url,
+   token, public keys).
+2. Add the services this machine shares, by name: each one's address and the
+   requests it allows.
 3. Check it, as the service account:
 
 ```sh
@@ -55,7 +57,7 @@ holds the token and any service keys. To show the configuration to someone
 else, use `eidonix-connector check --redacted`.
 
 For a storage service with `encryption: sse-c`, create the key with
-`eidonix-connector generate-key`, paste it as `encryption_key`, and keep a
+`eidonix-connector generate-key`, paste it as `encryption-key`, and keep a
 copy somewhere safe: files cannot be read without it.
 
 ## 3. Start
@@ -77,7 +79,7 @@ rc-service eidonix-connector checkconfig     # explain the configuration
 
 The connector runs unprivileged as `eidonix-connector` and refuses to run as
 root. It needs outbound HTTPS to the upstream (directly or through
-`upstream.proxy_url`) and plain connections to the machines its services
+`upstream.proxy`) and plain connections to the machines its services
 name; it listens on no port. Where it may connect is enforced inside the
 process from the configuration file, the same on every distribution; you do
 not need a separate firewall rule for the connector (compute nodes can stay
@@ -105,39 +107,65 @@ interrupting streams.
 The image (`Dockerfile`, distroless, runs as UID/GID 65532) expects the file
 at `/etc/eidonix-connector/connector.yaml` and an access log path it can
 write. The permission gate applies inside the container too: mount a file
-owned by UID 65532 with mode `0600`, and point `access_log` at a writable
+owned by UID 65532 with mode `0600`, and point `access-log` at a writable
 volume.
 
 ```sh
-docker build -t eidonix-connector:0.2.0 .
+docker build -t eidonix-connector:0.3.0 .
 install -m 0600 -o 65532 -g 65532 connector.yaml /srv/eidonix-connector/connector.yaml
 docker run -d --name eidonix-connector --restart unless-stopped \
   --read-only --cap-drop ALL --security-opt no-new-privileges \
   -v /srv/eidonix-connector/connector.yaml:/etc/eidonix-connector/connector.yaml:ro \
   -v /srv/eidonix-connector/log:/var/log/eidonix-connector \
-  eidonix-connector:0.2.0
+  eidonix-connector:0.3.0
 ```
 
 (`/srv/eidonix-connector/log` must be writable by UID 65532.)
 
+## Upgrading from v0.2
+
+v0.3 lists services by name instead of grouping them by type, and the
+connector no longer knows how Eidonix uses a service: each service lists the
+requests it allows. A v0.2 file is refused with the command to run. Convert
+it, naming the connector as Eidonix Setup does:
+
+```sh
+sudo eidonix-connector convert --site <name in Setup> /etc/eidonix-connector/connector.yaml > /tmp/connector.yaml
+sudo -u eidonix-connector eidonix-connector check --config /tmp/connector.yaml   # or as root
+sudo install -m 0640 -o root -g eidonix-connector /tmp/connector.yaml /etc/eidonix-connector/connector.yaml
+sudo shred -u /tmp/connector.yaml
+```
+
+`convert` writes the new file to standard output and a review list to
+standard error. It keeps service names (rename them in the file if Eidonix
+will address them by new names), turns each type into the requests Eidonix
+used of it (`chat` → `POST /v1/*, GET /v1/models`, `embeddings` with
+`api_path: /` → `POST /embeddings`, …), turns model aliases around
+(`<name on the server>: {alias: <name Eidonix uses>}`), writes out the
+limits the old type implied, and sets `health: /health` as v0.2 probed.
+`models: any` becomes no `models` (bodies are not inspected), and only the
+first of several `urls` is kept. Eidonix's service paths change where
+`api_path` was set (for example `/v1/embeddings` → `/embeddings`).
+
+A storage service loses its folder: v0.3 uses the whole bucket. The review
+list prints the exact command; with the connector stopped:
+
+```sh
+sudo eidonix-connector storage move-to-root <service> --from cletus/ --dry-run
+sudo eidonix-connector storage move-to-root <service> --from cletus/
+```
+
+It copies every object to the top of the bucket on the storage server (with
+the `sse-c` key from the file), verifies every copy, then removes the
+originals; it refuses, changing nothing, if any destination already exists.
+
 ## Upgrading from v0.1
 
 v0.1 was packaged as `cletus-connector` with `/etc/cletus-connector/config.toml`
-plus separate token and secret files. v0.2 reads only `connector.yaml`. Install
-the new package next to the old one, then convert:
-
-```sh
-sudo eidonix-connector convert /etc/cletus-connector/config.toml > /tmp/connector.yaml
-sudo install -m 0640 -o root -g eidonix-connector /tmp/connector.yaml /etc/eidonix-connector/connector.yaml
-sudo shred -u /tmp/connector.yaml
-sudo -u eidonix-connector eidonix-connector check
-```
-
-`convert` reads the old file and the files it references (token, header
-secrets, storage credentials and keys, CA files), writes the new file to
-standard output and prints a review list to standard error: everything it
-could not carry (a flavor's extra paths, headers other than a bearer key,
-settings now fixed by type) and every service that became `models: any`.
-Read the list, adjust the file, check it, then stop and disable the old
-service and enable the new one. The old package can stay installed for
-connectors not yet upgraded.
+plus separate token and secret files. `convert` reads that file too, and the
+files it references (token, header secrets, storage credentials and keys, CA
+files): install the new package next to the old one, then run the same
+`convert --site …` on `/etc/cletus-connector/config.toml`. Its review list
+also names everything v0.1 had that could not be carried (a flavor's extra
+paths, headers other than a bearer key, settings now fixed internally). Stop
+and disable the old service and enable the new one once `check` passes.

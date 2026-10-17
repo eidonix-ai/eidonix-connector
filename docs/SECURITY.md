@@ -13,12 +13,15 @@ it with Eidonix's usage records; it does not authorise on them.
 What the connector guarantees is that it is secure within its own
 configuration:
 
-- **It exposes exactly what the file says.** Each service type accepts a
-  fixed, published list of requests and nothing else; a `custom` service
-  accepts exactly its `paths`. Paths are matched exactly (no prefixes,
-  encodings, dot segments or queries), request and response headers are
-  allowlisted, redirects are never followed, sizes and idle time are bounded,
-  and models outside a service's list are refused before anything is sent.
+- **It exposes exactly what the file says.** Each service accepts exactly the
+  requests its `allowed-endpoints` lists and nothing else. Paths are
+  canonicalised strictly first (no encodings, dot segments, empty segments or
+  queries other than on GET) and matched exactly, or below a final `/*` the
+  owner wrote. Request and response headers are allowlisted, redirects are
+  never followed, sizes and idle time are bounded, and when a service lists
+  models, requests naming any other model are refused before anything is
+  sent. A `/*` entry allows everything below it: list narrower paths when the
+  server offers more than Eidonix should reach.
 - **It reaches exactly the machines the file names.** Every outbound
   connection goes through a dialer pinned to the upstream, the optional
   proxy, and each service's address, at the IPs those names resolved to at
@@ -44,18 +47,18 @@ owned by root (or, for development, by the non-root user running it), that
 other users can access, or that its group can write, and print the exact fix.
 Secrets are never logged; `check --redacted` prints the file with each secret
 replaced by `•••• (set)`. Back up the file securely, especially an
-`encryption_key`.
+`encryption-key`.
 
 ## Upstream identity (review item M5)
 
 v0.1 sent the connection token in the WebSocket upgrade before the server had
-proved anything. v0.2 changes the order:
+proved anything. Since v0.2 the order is:
 
 1. The connector's upgrade request carries only a fresh 32-byte nonce and its
    instance id: no credential.
 2. The server answers with a signature over
-   `eidonix-connector.v2|nonce|instance|server time` and the id of its key.
-3. The connector checks the key is one of its `public_keys`, the time is
+   `eidonix-connector.v3|nonce|instance|server time` and the id of its key.
+3. The connector checks the key is one of its `public-keys`, the time is
    within five minutes, and the signature. On any failure it closes the
    connection; the token is never sent.
 4. Only then does it send the token on the multiplexed control stream.
@@ -65,22 +68,28 @@ certificate the host trusts, never learns the token.
 
 **Remaining limitation.** The signature is not bound to the TLS channel. A
 TLS-inspecting proxy that the host trusts (its CA is in the system store or
-`ca_certificate`) can relay the challenge to the real Eidonix, pass back the
+`ca-certificate`) can relay the challenge to the real Eidonix, pass back the
 valid signature, and then read the token and every request, or inject
 requests the configuration allows. Pinning keys does not stop a trusted
 man-in-the-middle; treat any TLS inspection infrastructure the host trusts as
 part of the security boundary. Closing this fully would need an
-application-layer key exchange bound to the signature, which v0.2 does not
+application-layer key exchange bound to the signature, which v0.3 does not
 implement.
 
+After authentication the connector names its `site`; Eidonix refuses a
+session whose site is not the connector's name in Setup, so a token pasted
+into the wrong machine's file is caught rather than serving the wrong
+services.
+
 Key rotation: Eidonix publishes the new key in Setup; list both old and new
-in `public_keys`, reload, let Eidonix switch, then remove the old key. Never
+in `public-keys`, reload, let Eidonix switch, then remove the old key. Never
 accept a key learned only from the connection it is meant to verify.
 
 ## Storage
 
 Eidonix can ask a storage service only to put, get, head, list, delete or
-copy files inside the configured bucket and prefix. It cannot supply an
+copy files inside the configured bucket (the whole bucket belongs to
+Eidonix; a `read-only` service refuses put, delete and copy). It cannot supply an
 endpoint, credentials or an encryption key, reach the reserved
 `.eidonix-connector/` folder, administer buckets or mint presigned links.
 Keys are validated before storage is contacted; uploads commit only after
@@ -88,7 +97,8 @@ byte counts, SHA-256 and a clean end of stream verify.
 
 These limits do not give per-user file authorization: Eidonix must authorize
 each user and file itself. Whoever controls the Eidonix side can read every
-file in the prefix as plaintext through `get`, and overwrite or delete files.
+file in the bucket as plaintext through `get`, and overwrite or delete files
+unless the service is read-only.
 
 **What `encryption` does and does not protect:**
 
@@ -99,8 +109,8 @@ file in the prefix as plaintext through `get`, and overwrite or delete files.
   key. It does **not** hide content from Eidonix (the connector decrypts on
   `get`), from a compromised connector host, or from a malicious live
   storage server, which sees the key in each request.
-- `sse-s3` / `sse-kms`: the storage encrypts with its own keys. Anyone with
-  the storage credentials reads plaintext.
+- `sse-s3`: the storage encrypts with its own keys. Anyone with the storage
+  credentials reads plaintext.
 - `none`: files are stored as they arrive. This is the owner's decision, for
   storage the organization already secures on its premises; `check` states
   it plainly.

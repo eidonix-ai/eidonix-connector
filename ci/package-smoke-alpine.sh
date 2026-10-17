@@ -15,7 +15,7 @@ sha256sum /usr/bin/eidonix-connector
 grep -q 'refusing to run as root' /tmp/root-refusal
 ! su -s /bin/sh eidonix-connector -c 'eidonix-connector check' 2>/tmp/template
 cat /tmp/template
-grep -q 'token is not a connection token' /tmp/template
+grep -q "must be the connector's name in Eidonix Setup" /tmp/template
 chmod 0644 /etc/eidonix-connector/connector.yaml
 ! su -s /bin/sh eidonix-connector -c 'eidonix-connector check' 2>/tmp/mode
 cat /tmp/mode

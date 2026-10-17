@@ -1,6 +1,6 @@
 #!/bin/sh
 set -eu
-VERSION=${VERSION:-0.2.0}
+VERSION=${VERSION:-0.3.0}
 GO_VERSION=go1.27.2
 [ "$(go version | awk '{print $3}')" = "$GO_VERSION" ] || { echo "build requires $GO_VERSION" >&2; exit 1; }
 mkdir -p dist

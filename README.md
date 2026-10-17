@@ -8,8 +8,8 @@ allows.
 
 One file, `/etc/eidonix-connector/connector.yaml`, says:
 
-1. **what it shares**: the services, grouped by type (`chat`, `embeddings`,
-   `rerank`, `transcription`, …), and nothing else;
+1. **what it shares**: each service by name, with its address and the exact
+   requests allowed (`POST /v1/*`, `GET /v1/models`, …), and nothing else;
 2. **the rules for them**: which models may be used, how many requests at
    once, how many per minute;
 3. **where it may connect**: out to Eidonix only (checked against Eidonix's
@@ -20,25 +20,28 @@ One file, `/etc/eidonix-connector/connector.yaml`, says:
    records.
 
 ```yaml
+site: example-gpu-site               # the connector's name in Eidonix Setup
 upstream:
   url: https://connect.eidonix.com
   token: cxn_…                       # issued in Eidonix Setup
-  public_keys: [BASE64_KEY_FROM_SETUP]
+  public-keys: [BASE64_KEY_FROM_SETUP]
 
-chat:
-  - name: gpu1
-    url: http://10.0.0.33:8000
+services:
+  gpu1:
+    address: 10.0.0.33:8000
+    allowed-endpoints: [POST /v1/*, GET /v1/models]
     models: [Qwen/Qwen3-32B]         # only these models may be used
-    max_concurrent_requests: 32
+    health: /health
+    max-concurrent-requests: 32
 ```
 
 `eidonix-connector check` explains the file back in sentences:
 
 ```
+Site example-gpu-site (must match the connector's name in Eidonix Setup).
 Connects to upstream connect.eidonix.com (1 public key).
 Shares 1 service and can reach only this machine:
-  chat  gpu1  10.0.0.33:8000  models: Qwen/Qwen3-32B   max concurrent: 32
-Not shared: anthropic, embeddings, rerank, transcription, speech, image, document, conversion, realtime, storage, custom.
+  gpu1  http  10.0.0.33:8000  POST /v1/*, GET /v1/models   models: Qwen/Qwen3-32B   health: GET /health   max concurrent: 32
 Logs every request to /var/log/eidonix-connector/access.log (never contents).
 File permissions: ok (0640 root:eidonix-connector). Secrets set: token.
 ```
@@ -50,16 +53,17 @@ File permissions: ok (0640 root:eidonix-connector). Secrets set: token.
 | `eidonix-connector run [--config PATH]` | Connect and share the configured services. SIGHUP reloads the file; SIGUSR1 reopens the access log. |
 | `eidonix-connector check [--config PATH]` | Validate the file and explain it. `--redacted` prints the file with every secret replaced by `•••• (set)`, for an auditor or a support ticket. `--write-probe` also tests writing to storage. |
 | `eidonix-connector init [PATH]` | Write the commented blank configuration. |
-| `eidonix-connector generate-key` | Print a new storage `encryption_key`. |
-| `eidonix-connector convert OLD.toml` | Convert a v0.1 configuration (see [installation](docs/INSTALL.md#upgrading-from-v01)). |
+| `eidonix-connector generate-key` | Print a new storage `encryption-key`. |
+| `eidonix-connector convert --site NAME OLD` | Convert a v0.2 (or v0.1) configuration to v0.3 (see [installation](docs/INSTALL.md#upgrading-from-v02)). |
+| `eidonix-connector storage move-to-root SERVICE --from FOLDER/` | Move a storage service's files from a v0.2 folder to the top of its bucket (`--dry-run` to preview). |
 | `eidonix-connector version` | |
 
 ## Documentation
 
 - [Installation](docs/INSTALL.md): Alpine (OpenRC), Debian/Ubuntu and RHEL-family (systemd), Docker.
-- [Configuration](docs/CONFIG.md): every setting and exactly which requests each type accepts.
+- [Configuration](docs/CONFIG.md): every setting, how requests are matched and models checked.
 - [Security](docs/SECURITY.md): the trust model and what the connector does and does not protect.
-- [Protocol](docs/PROTOCOL.md): the v2 wire protocol (`protocol/` is the reference implementation).
+- [Protocol](docs/PROTOCOL.md): the v3 wire protocol (`protocol/` is the reference implementation).
 - [Changelog](CHANGELOG.md).
 
 ## Building
@@ -73,7 +77,7 @@ This repository also contains `cmd/test-gateway`, a loopback-only development
 peer that speaks the same protocol:
 
 ```sh
-go run ./cmd/test-gateway --init --state /tmp/connector-dev --upstream http://127.0.0.1:8000
+go run ./cmd/test-gateway --init --state /tmp/connector-dev --upstream 127.0.0.1:8000
 go run ./cmd/test-gateway --state /tmp/connector-dev        # listens on https://127.0.0.1:8443
 go run ./cmd/eidonix-connector run --config /tmp/connector-dev/connector.yaml
 curl --cacert /tmp/connector-dev/tls.pem \

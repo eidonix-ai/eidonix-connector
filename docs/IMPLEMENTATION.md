@@ -1,39 +1,41 @@
 # Implementation status
 
-Module `github.com/eidonix-ai/eidonix-connector`, Apache-2.0. Version 0.2.0.
+Module `github.com/eidonix-ai/eidonix-connector`, Apache-2.0. Version 0.3.0.
 
 ## Implemented
 
-- Protocol v2 (`protocol/`): bounded control, stream and storage framing;
-  server identity proven before the token is sent; golden vectors including a
-  signature vector; fuzz targets for every parser.
-- One YAML configuration file with strict parsing, line-numbered errors and a
-  permission gate; `check` (and `--redacted`), `init`, `generate-key`,
-  `convert` from v0.1.
-- Fixed per-type request contracts, `api_path`, model allowlists (JSON and
-  multipart), local model lists, per-service concurrency and rate limits,
-  health probing and `models: any` discovery.
+- Protocol v3 (`protocol/`): bounded control, stream and storage framing;
+  server identity proven before the token is sent; the site named in hello;
+  services advertised by kind, endpoints and models; golden vectors including
+  a signature vector; fuzz targets for every parser.
+- One YAML configuration file (site, upstream, services by name) with strict
+  parsing, line-numbered errors naming the service and a permission gate;
+  `check` (and `--redacted`), `init`, `generate-key`, `convert --site` from
+  v0.2 and v0.1, `storage move-to-root`.
+- Per-service `allowed-endpoints` (exact or a final `/*`), model lists and
+  aliases (JSON and multipart), per-service concurrency and rate limits,
+  health probing by path or reachability.
 - Egress pinned in process to the configured hosts; no proxy for service
   calls; redirects refused.
-- Connector-side storage: six operations confined to one bucket and prefix,
-  SSE-C/SSE-S3/SSE-KMS/none, verified commits, read budgets, abandoned-upload
-  cleanup, read-only checks.
+- Connector-side storage: six operations confined to one bucket,
+  SSE-C/SSE-S3/none, read-only services, verified commits, abandoned-upload
+  cleanup, read-only checks; `move-to-root` for v0.2 folders.
 - Access log with caller metadata; SIGHUP reload and SIGUSR1 log reopen.
 - Static Linux amd64/arm64 builds and `.deb`/`.rpm`/`.apk` packages, systemd
   and OpenRC services, distroless image.
-- `cmd/test-gateway`, a loopback development peer speaking v2 (not a
+- `cmd/test-gateway`, a loopback development peer speaking v3 (not a
   production gateway, tenant boundary, revocation service or deployment
   target).
 
 ## Verified
 
-The automated suite runs every service type through a real TLS, WebSocket
-and yamux session against fake servers, including storage against a
-recording S3 double, model refusals, path refusals, `api_path`, per-service
-`busy`, SSE streaming and cancellation, WebSocket relay, idle limits,
+The automated suite runs a service shaped like each server Eidonix uses
+through a real TLS, WebSocket and yamux session against fake servers,
+including storage against a recording S3 double, model refusals, path
+refusals, a site mismatch, per-service `busy`, SSE streaming and cancellation, WebSocket relay, idle limits,
 header and redirect attacks, and a server signing with an unlisted key
 (which never receives the token). `ci/storage-minio.sh` runs the storage
-suite against a real TLS MinIO. Recorded runs are under
+suite, including `move-to-root` with SSE-C, against a real TLS MinIO. Recorded runs are under
 [ci/evidence](../ci/evidence); only recorded runs count as evidence.
 
 ## Not yet verified
