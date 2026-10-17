@@ -40,6 +40,7 @@ func testConfig(t testing.TB, services, origin string) *config.Config {
 	c.AccessLog = filepath.Join(t.TempDir(), "access.log")
 	return c
 }
+
 // chatEndpoints is what Eidonix uses of an OpenAI-compatible chat server.
 const chatEndpoints = "[POST /v1/chat/completions, POST /v1/responses, GET /v1/models]"
 

@@ -34,14 +34,17 @@ type rig struct {
 }
 
 // Synthetic placeholder key text; the rig replaces it with the real test key.
-const upstreamTemplate = `upstream:
+const upstreamTemplate = `site: local-test
+upstream:
   url: https://127.0.0.1
   token: ` + testToken + `
-  public_keys: [%s]
+  public-keys: [%s]
+services:
 `
 
 // newRig starts a test gateway and a connector session for services (YAML,
-// %s replaced by each origin argument in order).
+// %s replaced by each origin argument in order; http:// origins become
+// host:port addresses).
 func newRig(t *testing.T, services string, origins ...any) *rig {
 	t.Helper()
 	pub, key, e := ed25519.GenerateKey(rand.Reader)
@@ -55,6 +58,12 @@ func newRigWithKeys(t *testing.T, key ed25519.PrivateKey, configured ed25519.Pub
 	g, e := New(testToken, key)
 	if e != nil {
 		t.Fatal(e)
+	}
+	g.Site = "local-test"
+	for i, o := range origins {
+		if s, ok := o.(string); ok {
+			origins[i] = strings.TrimPrefix(s, "http://")
+		}
 	}
 	server := httptest.NewTLSServer(g)
 	audit := filepath.Join(t.TempDir(), "access.log")
@@ -73,7 +82,7 @@ func newRigWithKeys(t *testing.T, key ed25519.PrivateKey, configured ed25519.Pub
 	done := make(chan error, 1)
 	tlsConfig := server.Client().Transport.(*http.Transport).TLSClientConfig.Clone()
 	go func() {
-		done <- session.RunOptions(ctx, session.Options{Server: "https://127.0.0.1", Token: testToken, Keys: []ed25519.PublicKey{configured}, TLSConfig: tlsConfig, DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+		done <- session.RunOptions(ctx, session.Options{Server: "https://127.0.0.1", Token: testToken, Site: cfg.Site, Keys: []ed25519.PublicKey{configured}, TLSConfig: tlsConfig, DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			return (&net.Dialer{}).DialContext(ctx, network, server.Listener.Addr().String())
 		}}, c)
 	}()
@@ -133,26 +142,31 @@ func requestTo(t *testing.T, g *Gateway, service, method, path, ct, data string)
 	}
 	return resp, body
 }
-func TestEveryTypeOverTLSYamux(t *testing.T) {
-	cases := []struct{ typ, extra, method, path, ct, upstreamPath string }{
-		{"chat", "    models: any\n", "POST", "/v1/chat/completions", "application/json", ""},
-		{"chat", "    models: any\n", "POST", "/v1/responses", "application/json", ""},
-		{"anthropic", "    models: any\n", "POST", "/v1/messages", "application/json", ""},
-		{"embeddings", "    models: any\n", "POST", "/v1/embeddings", "application/json", ""},
-		{"embeddings", "    models: any\n    api_path: /\n", "POST", "/v1/embeddings", "application/json", "/embeddings"},
-		{"rerank", "    models: any\n", "POST", "/v1/rerank", "application/json", ""},
-		{"transcription", "    models: any\n", "POST", "/v1/audio/transcriptions", "multipart/form-data; boundary=abc", ""},
-		{"speech", "    models: any\n", "POST", "/v1/audio/speech", "application/json", ""},
-		{"speech", "    models: any\n", "GET", "/v1/audio/voices", "", ""},
-		{"image", "    models: any\n", "POST", "/v1/images/edits", "multipart/form-data; boundary=abc", ""},
-		{"document", "", "POST", "/layout-parsing", "application/json", ""},
-		{"conversion", "", "POST", "/convert", "application/octet-stream", ""},
-		{"conversion", "", "POST", "/extract", "application/pdf", ""},
-		{"realtime", "", "GET", "/v1/config", "", ""},
-		{"custom", "    paths: [\"POST /custom\"]\n", "POST", "/custom", "text/plain", ""},
+
+// TestEveryServiceShapeOverTLSYamux: the requests Eidonix sends to each kind
+// of server pass through a v3 session unchanged (same path, same body).
+func TestEveryServiceShapeOverTLSYamux(t *testing.T) {
+	cases := []struct{ endpoints, method, path, ct string }{
+		{"[POST /v1/*, GET /v1/models]", "POST", "/v1/chat/completions", "application/json"},
+		{"[POST /v1/*, GET /v1/models]", "POST", "/v1/responses", "application/json"},
+		{"[POST /v1/*, GET /v1/models]", "GET", "/v1/models", ""},
+		{"[POST /v1/messages, POST /v1/messages/count_tokens]", "POST", "/v1/messages", "application/json"},
+		{"[POST /embeddings]", "POST", "/embeddings", "application/json"},
+		{"[POST /v1/rerank]", "POST", "/v1/rerank", "application/json"},
+		{"[POST /v1/audio/transcriptions]", "POST", "/v1/audio/transcriptions", "multipart/form-data; boundary=abc"},
+		{"[POST /v1/audio/speech, GET /v1/audio/voices]", "POST", "/v1/audio/speech", "application/json"},
+		{"[POST /v1/audio/speech, GET /v1/audio/voices]", "GET", "/v1/audio/voices", ""},
+		{"[POST /v1/images/*]", "POST", "/v1/images/edits", "multipart/form-data; boundary=abc"},
+		{"[POST /layout-parsing]", "POST", "/layout-parsing", "application/json"},
+		{"[POST /convert, POST /extract]", "POST", "/convert", "application/octet-stream"},
+		{"[POST /convert, POST /extract]", "POST", "/extract", "application/pdf"},
+		{"[WEBSOCKET /v1/stream, GET /v1/config]", "GET", "/v1/config", ""},
+		{"[POST /custom]", "POST", "/custom", "text/plain"},
+		{"[PUT /v1/state]", "PUT", "/v1/state", "application/json"},
+		{"[DELETE /v1/jobs/*]", "DELETE", "/v1/jobs/7", ""},
 	}
 	for _, tc := range cases {
-		t.Run(tc.typ+tc.path, func(t *testing.T) {
+		t.Run(tc.method+tc.path, func(t *testing.T) {
 			seen := make(chan string, 1)
 			up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.URL.Path == "/health" {
@@ -164,20 +178,16 @@ func TestEveryTypeOverTLSYamux(t *testing.T) {
 				w.Write([]byte{0, 1, 2, 255})
 			}))
 			defer up.Close()
-			rig := newRig(t, tc.typ+":\n  - name: test\n    url: %s\n"+tc.extra, up.URL)
+			rig := newRig(t, "  test:\n    address: %s\n    allowed-endpoints: "+tc.endpoints+"\n", up.URL)
 			data := "sentinel-prompt"
-			if tc.method == "GET" {
+			if tc.method == "GET" || tc.method == "DELETE" {
 				data = ""
 			}
 			resp, body := request(t, rig.g, tc.method, tc.path, tc.ct, data)
 			if resp.StatusCode != 200 || !bytes.Equal(body, []byte{0, 1, 2, 255}) {
 				t.Fatalf("response %d %q", resp.StatusCode, body)
 			}
-			want := tc.upstreamPath
-			if want == "" {
-				want = tc.path
-			}
-			if got := <-seen; got != tc.method+" "+want+" "+data {
+			if got := <-seen; got != tc.method+" "+tc.path+" "+data {
 				t.Fatal(got)
 			}
 			deadline := time.Now().Add(time.Second)
@@ -208,7 +218,7 @@ func TestSSEFlushAndCancellation(t *testing.T) {
 		<-r.Context().Done()
 	}))
 	defer up.Close()
-	rig := newRig(t, "chat:\n  - name: test\n    url: %s\n    models: any\n    idle_timeout: 2s\n", up.URL)
+	rig := newRig(t, "  test:\n    address: %s\n    allowed-endpoints: [POST /v1/chat/completions, POST /v1/responses, GET /v1/models]\n    idle-timeout: 2s\n", up.URL)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	req, _ := http.NewRequestWithContext(ctx, "POST", "http://connector/v1/chat/completions", strings.NewReader("{}"))
@@ -248,7 +258,7 @@ func TestWebSocketRelay(t *testing.T) {
 		}
 	}))
 	defer up.Close()
-	rig := newRig(t, "realtime:\n  - name: test\n    url: %s\n", up.URL)
+	rig := newRig(t, "  test:\n    address: %s\n    allowed-endpoints: [WEBSOCKET /v1/stream, GET /v1/config]\n", up.URL)
 	d := websocket.Dialer{TLSClientConfig: rig.server.Client().Transport.(*http.Transport).TLSClientConfig.Clone()}
 	ws, resp, e := d.Dial("wss"+strings.TrimPrefix(rig.server.URL, "https")+"/services/test/v1/stream", http.Header{"Authorization": {"Bearer " + testToken}})
 	if e != nil {
@@ -293,7 +303,7 @@ func TestLargeOCRUpload(t *testing.T) {
 		io.WriteString(w, `{"ok":true}`)
 	}))
 	defer up.Close()
-	rig := newRig(t, "document:\n  - name: test\n    url: %s\n", up.URL)
+	rig := newRig(t, "  test:\n    address: %s\n    allowed-endpoints: [POST /layout-parsing]\n", up.URL)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	req, _ := http.NewRequestWithContext(ctx, "POST", "http://connector/layout-parsing", io.LimitReader(zeroReader{}, size))
@@ -344,7 +354,7 @@ func TestLongSSESoak(t *testing.T) {
 		}
 	}))
 	defer up.Close()
-	rig := newRig(t, "chat:\n  - name: test\n    url: %s\n    models: any\n    idle_timeout: 1s\n", up.URL)
+	rig := newRig(t, "  test:\n    address: %s\n    allowed-endpoints: [POST /v1/chat/completions, POST /v1/responses, GET /v1/models]\n    idle-timeout: 1s\n", up.URL)
 	req, _ := http.NewRequest("POST", "http://connector/v1/chat/completions", strings.NewReader("{}"))
 	req.Header.Set("Content-Type", "application/json")
 	started := time.Now()
@@ -366,7 +376,7 @@ func TestReconnectAfterNetworkLoss(t *testing.T) {
 		io.WriteString(w, `{"ok":true}`)
 	}))
 	defer up.Close()
-	rig := newRig(t, "chat:\n  - name: test\n    url: %s\n    models: any\n", up.URL)
+	rig := newRig(t, "  test:\n    address: %s\n    allowed-endpoints: [POST /v1/chat/completions, POST /v1/responses, GET /v1/models]\n", up.URL)
 	rig.g.mu.Lock()
 	var first *peer
 	for p := range rig.g.sessions {

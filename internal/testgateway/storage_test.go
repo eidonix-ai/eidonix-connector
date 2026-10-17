@@ -62,7 +62,7 @@ func TestStorageCapabilityNegotiation(t *testing.T) {
 			if env, e := protocol.ReadMessage(br); e != nil || env.Type != protocol.MessageAuthOK {
 				t.Fatal(env, e)
 			}
-			hello := protocol.Hello{V: protocol.Version, Type: protocol.MessageHello, InstanceID: instance, Services: []protocol.Service{{Name: "files", Type: protocol.TypeStorage, Storage: &protocol.StorageService{MaxKeyBytes: 1017, MaxObjectBytes: 100, Encryption: "sse-s3"}}}}
+			hello := protocol.Hello{V: protocol.Version, Type: protocol.MessageHello, InstanceID: instance, Site: "local-test", Services: []protocol.Service{{Name: "files", Kind: protocol.KindS3, Storage: &protocol.StorageService{MaxKeyBytes: 1023, MaxObjectBytes: 100, Encryption: "sse-s3"}}}}
 			if capable {
 				hello.Capabilities = []string{protocol.CapabilityStorage}
 			}
@@ -106,7 +106,7 @@ func fakeStoragePeer(t *testing.T, g *Gateway, handler func(net.Conn)) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	p := &peer{mux: cloud, services: map[string]protocol.Service{"files": {Name: "files", Type: protocol.TypeStorage}}, capabilities: map[string]bool{protocol.CapabilityStorage: true}, slots: make(chan struct{}, 4)}
+	p := &peer{mux: cloud, services: map[string]protocol.Service{"files": {Name: "files", Kind: protocol.KindS3}}, capabilities: map[string]bool{protocol.CapabilityStorage: true}, slots: make(chan struct{}, 4)}
 	g.mu.Lock()
 	g.sessions[p] = true
 	g.mu.Unlock()

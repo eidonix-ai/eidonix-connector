@@ -99,6 +99,7 @@ func TestRateAndAudit(t *testing.T) {
 		t.Fatalf("access entry %+v", e)
 	}
 }
+
 // TestReadOnlyRefusesWrites: a read-only service refuses put, delete and copy
 // before any backend call, and still serves reads.
 func TestReadOnlyRefusesWrites(t *testing.T) {

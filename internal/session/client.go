@@ -32,14 +32,14 @@ type Handler interface {
 type Options struct {
 	Server, Token, Version string
 	// Site is the connector's name in Setup, sent in hello.
-	Site string
-	Keys                   []ed25519.PublicKey
-	TLSConfig              *tls.Config
-	DialContext            func(context.Context, string, string) (net.Conn, error)
-	MaxStreams             int
-	started                time.Time
-	refresh                func(context.Context) error
-	Proxy                  func(*http.Request) (*url.URL, error)
+	Site        string
+	Keys        []ed25519.PublicKey
+	TLSConfig   *tls.Config
+	DialContext func(context.Context, string, string) (net.Conn, error)
+	MaxStreams  int
+	started     time.Time
+	refresh     func(context.Context) error
+	Proxy       func(*http.Request) (*url.URL, error)
 }
 
 var processInstance = sync.OnceValues(protocol.NewInstanceID)

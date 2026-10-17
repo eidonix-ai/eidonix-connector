@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"github.com/eidonix-ai/eidonix-connector/internal/testgateway"
 	"github.com/eidonix-ai/eidonix-connector/protocol"
 	"github.com/gorilla/websocket"
 	"github.com/hashicorp/yamux"
@@ -36,12 +37,12 @@ var testToken = "cxn_ABCDEFGHIJKLMNOP_" + base64.RawURLEncoding.EncodeToString(b
 // upstreamResult is what a fake upstream observed during one connection.
 type upstreamResult struct {
 	sawToken bool   // the token appeared in the upgrade request or any later byte
-	auth     string // token received in a v2 auth message
+	auth     string // token received in an auth message
 	hello    bool
 }
 
 // fakeUpstream signs the upgrade with key (mangling the nonce when !valid), then
-// either runs the v2 control handshake or, when the signature is bad, records
+// either runs the control handshake or, when the signature is bad, records
 // every byte the connector sends until it disconnects.
 func fakeUpstream(key ed25519.PrivateKey, valid bool, authOK bool, results chan<- upstreamResult) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -243,5 +244,28 @@ func TestTLSInspectionProxyKeepsIdentityPin(t *testing.T) {
 				t.Fatalf("valid=%v result=%+v", valid, res)
 			}
 		})
+	}
+}
+
+// TestSiteMismatchEndsSession: a gateway that knows the connector by another
+// name closes the session after hello with site_mismatch, and the connector
+// says so.
+func TestSiteMismatchEndsSession(t *testing.T) {
+	pub, key, _ := ed25519.GenerateKey(rand.Reader)
+	g, err := testgateway.New(testToken, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.Site = "example-site"
+	defer g.Close()
+	srv := httptest.NewTLSServer(g)
+	defer srv.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	o := Options{Token: testToken, Site: "other-site", Keys: []ed25519.PublicKey{pub}, TLSConfig: &tls.Config{InsecureSkipVerify: true}, DialContext: dialTo(strings.TrimPrefix(srv.URL, "https://")), MaxStreams: 4}
+	instance := "00000000-0000-4000-8000-000000000001"
+	e := connect(ctx, "wss://upstream.example/v1/connectors/session", instance, o, fakeHandler{})
+	if !errors.Is(e, ErrSiteMismatch) || !strings.Contains(e.Error(), `site "other-site"`) {
+		t.Fatal(e)
 	}
 }

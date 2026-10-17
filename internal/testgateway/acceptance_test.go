@@ -115,64 +115,65 @@ func (e *echoServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	io.WriteString(w, line)
 }
 
-const acceptanceServices = `chat:
-  - name: chat
-    url: %[1]s
+const acceptanceServices = `  chat:
+    address: %[1]s
+    allowed-endpoints: [POST /v1/*, GET /v1/models]
     models:
-      chat-large: server/chat-large-v2
-      chat-small: chat-small
-  - name: tiny
-    url: %[1]s
-    models: any
-    max_concurrent_requests: 1
-anthropic:
-  - name: claude
-    url: %[1]s
+      server/chat-large-v2: {alias: chat-large}
+      chat-small:
+    max-concurrent-requests: 32
+  tiny:
+    address: %[1]s
+    allowed-endpoints: [POST /v1/*]
+    max-concurrent-requests: 1
+  claude:
+    address: %[1]s
+    allowed-endpoints: [POST /v1/messages, POST /v1/messages/count_tokens]
     models: [claude-local]
-embeddings:
-  - name: embed
-    url: %[1]s
-    api_path: /
-    models: {nomic-embed: nomic-ai/nomic-embed-text-v1.5}
-rerank:
-  - name: rerank
-    url: %[1]s
+  embed:
+    address: %[1]s
+    allowed-endpoints: [POST /embeddings]
+    models:
+      nomic-ai/nomic-embed-text-v1.5: {alias: nomic-embed}
+  rerank:
+    address: %[1]s
+    allowed-endpoints: [POST /v1/rerank]
     models: [jina-reranker]
-transcription:
-  - name: stt
-    url: %[1]s
-    models: {whisper: /models/whisper-large}
-speech:
-  - name: tts
-    url: %[1]s
+  stt:
+    address: %[1]s
+    allowed-endpoints: [POST /v1/audio/transcriptions]
+    models:
+      /models/whisper-large: {alias: whisper}
+  tts:
+    address: %[1]s
+    allowed-endpoints: [POST /v1/audio/speech, GET /v1/audio/voices]
     models: [kokoro]
-image:
-  - name: image
-    url: %[1]s
+  image:
+    address: %[1]s
+    allowed-endpoints: [POST /v1/images/*]
     models: [image-gen]
-document:
-  - name: ocr
-    url: %[1]s
-conversion:
-  - name: convert
-    url: %[1]s
-realtime:
-  - name: voice
-    url: %[1]s
-storage:
-  - name: files
-    endpoint: %[2]s
+  ocr:
+    address: %[1]s
+    allowed-endpoints: [POST /layout-parsing]
+  convert:
+    address: %[1]s
+    allowed-endpoints: [POST /convert, POST /extract]
+  voice:
+    address: %[1]s
+    allowed-endpoints: [WEBSOCKET /v1/stream, GET /v1/config]
+  files:
+    kind: s3
+    address: %[2]s
     bucket: files-bucket
-    prefix: org/
-    access_key: placeholder-access
-    secret_key: placeholder-secret
-    encryption_key: MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=
-    ca_certificate: |
+    access-key: placeholder-access
+    secret-key: placeholder-secret
+    encryption: sse-c
+    encryption-key: MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=
+    ca-certificate: |
 %[3]s
-custom:
-  - name: tool
-    url: %[1]s
-    paths: ["POST /v1/run"]
+  tool:
+    address: %[1]s
+    allowed-endpoints: [POST /v1/run]
 `
 
 func multipartBody(model string) (string, string) {
@@ -187,10 +188,11 @@ func multipartBody(model string) (string, string) {
 	return b.String(), w.FormDataContentType()
 }
 
-// TestAcceptanceEveryTypeOverV2Session: one service of every type works
-// through a v2 session with the test gateway, including storage and a
-// realtime WebSocket; refusals and per-service limits behave as specified.
-func TestAcceptanceEveryTypeOverV2Session(t *testing.T) {
+// TestAcceptanceEveryServiceOverV3Session: a service shaped like each
+// server Eidonix uses works through a v3 session with the test gateway,
+// including storage and a realtime WebSocket; refusals and per-service limits
+// behave as specified.
+func TestAcceptanceEveryServiceOverV3Session(t *testing.T) {
 	echo := &echoServer{release: make(chan struct{})}
 	up := httptest.NewServer(echo)
 	defer up.Close()
@@ -200,7 +202,7 @@ func TestAcceptanceEveryTypeOverV2Session(t *testing.T) {
 	indented := "      " + strings.ReplaceAll(certPEM, "\n", "\n      ")
 	rig := newRig(t, acceptanceServices, up.URL, s3.URL, indented)
 
-	// hello advertised every service with its type, models and limit.
+	// hello advertised every service with its kind, endpoints, models and limit.
 	byName := map[string]protocol.Service{}
 	for _, s := range rig.g.Services() {
 		byName[s.Name] = s
@@ -208,13 +210,13 @@ func TestAcceptanceEveryTypeOverV2Session(t *testing.T) {
 	if len(byName) != 13 {
 		t.Fatalf("advertised %d services", len(byName))
 	}
-	if c := byName["chat"]; c.Type != "chat" || strings.Join(c.Models, ",") != "chat-large,chat-small" || c.ModelsAny || c.MaxConcurrentRequests != 32 {
+	if c := byName["chat"]; c.Kind != "http" || strings.Join(c.Models, ",") != "chat-large,chat-small" || strings.Join(c.Endpoints, ",") != "POST /v1/*,GET /v1/models" || c.MaxConcurrentRequests != 32 {
 		t.Fatalf("%+v", c)
 	}
-	if c := byName["tiny"]; !c.ModelsAny || c.MaxConcurrentRequests != 1 {
+	if c := byName["tiny"]; len(c.Models) != 0 || c.MaxConcurrentRequests != 1 {
 		t.Fatalf("%+v", c)
 	}
-	if f := byName["files"]; f.Type != "storage" || f.Storage == nil || f.Storage.Encryption != "sse-c" {
+	if f := byName["files"]; f.Kind != "s3" || f.Storage == nil || f.Storage.Encryption != "sse-c" || f.Storage.ReadOnly || len(f.Endpoints) != 0 {
 		t.Fatalf("%+v", f)
 	}
 
@@ -224,7 +226,7 @@ func TestAcceptanceEveryTypeOverV2Session(t *testing.T) {
 		{"chat", "POST", "/v1/chat/completions", "application/json", `{"model":"chat-large"}`, "POST /v1/chat/completions model=server/chat-large-v2"},
 		{"chat", "POST", "/v1/responses", "application/json", `{"model":"chat-small"}`, "POST /v1/responses model=chat-small"},
 		{"claude", "POST", "/v1/messages", "application/json", `{"max_tokens":1}`, "POST /v1/messages model=claude-local"},
-		{"embed", "POST", "/v1/embeddings", "application/json", `{"model":"nomic-embed","input":"x"}`, "POST /embeddings model=nomic-ai/nomic-embed-text-v1.5"},
+		{"embed", "POST", "/embeddings", "application/json", `{"model":"nomic-embed","input":"x"}`, "POST /embeddings model=nomic-ai/nomic-embed-text-v1.5"},
 		{"rerank", "POST", "/v1/rerank", "application/json", `{"model":"jina-reranker"}`, "POST /v1/rerank model=jina-reranker"},
 		{"stt", "POST", "/v1/audio/transcriptions", audioType, audio, "POST /v1/audio/transcriptions model=/models/whisper-large"},
 		{"tts", "POST", "/v1/audio/speech", "application/json", `{"model":"kokoro"}`, "POST /v1/audio/speech model=kokoro"},
@@ -240,9 +242,9 @@ func TestAcceptanceEveryTypeOverV2Session(t *testing.T) {
 			t.Errorf("%s %s %s: %d %q, want %q", tc.service, tc.method, tc.path, resp.StatusCode, body, tc.want)
 		}
 	}
-	// Allowlisted model list answered locally.
+	// The model list is the server's own.
 	resp, body := requestTo(t, rig.g, "chat", "GET", "/v1/models", "", "")
-	if resp.StatusCode != 200 || !strings.Contains(string(body), `"id":"chat-large"`) || strings.Contains(string(body), "server/") {
+	if resp.StatusCode != 200 || string(body) != "GET /v1/models model=" {
 		t.Fatalf("%d %s", resp.StatusCode, body)
 	}
 
@@ -254,8 +256,9 @@ func TestAcceptanceEveryTypeOverV2Session(t *testing.T) {
 		{"chat", "/v1/chat/completions", `{"model":"server/chat-large-v2"}`, "model_not_allowed"},
 		{"chat", "/v1/chat/completions", `{"model":"gpt-unknown"}`, "model_not_allowed"},
 		{"chat", "/v1/chat/completions", `{"messages":[]}`, "model_required"},
-		{"chat", "/v1/completions", `{"model":"chat-large"}`, "path_not_allowed"},
-		{"embed", "/embeddings", `{"model":"nomic-embed"}`, "path_not_allowed"},
+		{"chat", "/v2/completions", `{"model":"chat-large"}`, "path_not_allowed"},
+		{"claude", "/v1/complete", `{"model":"claude-local"}`, "path_not_allowed"},
+		{"embed", "/v1/embeddings", `{"model":"nomic-embed"}`, "path_not_allowed"},
 		{"tool", "/v1/other", `{}`, "path_not_allowed"},
 	} {
 		resp, _ := requestTo(t, rig.g, tc.service, "POST", tc.path, "application/json", tc.body)
@@ -342,7 +345,7 @@ func TestAcceptanceEveryTypeOverV2Session(t *testing.T) {
 
 	// The access log names each request's caller as the gateway reported it.
 	logged, _ := os.ReadFile(rig.audit)
-	types := map[string]bool{}
+	kinds := map[string]bool{}
 	for _, line := range bytes.Split(bytes.TrimSpace(logged), []byte("\n")) {
 		var entry map[string]any
 		if json.Unmarshal(line, &entry) != nil {
@@ -354,15 +357,15 @@ func TestAcceptanceEveryTypeOverV2Session(t *testing.T) {
 		if entry["org_slug"] != "local-test" || entry["user_key_id"] != "1" || entry["request_id"] == "" {
 			t.Fatalf("access line %s", line)
 		}
-		types[fmt.Sprint(entry["type"])] = true
+		kinds[fmt.Sprint(entry["kind"])] = true
 	}
 	list := []string{}
-	for k := range types {
+	for k := range kinds {
 		list = append(list, k)
 	}
 	sort.Strings(list)
-	if len(list) != 12 {
-		t.Fatalf("access log covers types %v", list)
+	if strings.Join(list, ",") != "http,s3" {
+		t.Fatalf("access log covers kinds %v", list)
 	}
 }
 
@@ -371,7 +374,7 @@ func TestAcceptanceEveryTypeOverV2Session(t *testing.T) {
 func TestAcceptanceUnlistedKeyNeverGetsToken(t *testing.T) {
 	_, impostor, _ := ed25519.GenerateKey(rand.Reader)
 	configured, _, _ := ed25519.GenerateKey(rand.Reader)
-	rig := newRigWithKeys(t, impostor, configured, "chat:\n  - name: c\n    url: http://127.0.0.1:1\n    models: any\n")
+	rig := newRigWithKeys(t, impostor, configured, "  c:\n    address: 127.0.0.1:1\n    allowed-endpoints: [POST /v1/*]\n")
 	time.Sleep(1500 * time.Millisecond) // at least one connection attempt and retry
 	rig.g.mu.Lock()
 	sessions := len(rig.g.sessions)

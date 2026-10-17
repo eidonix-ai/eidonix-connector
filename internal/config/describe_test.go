@@ -61,6 +61,7 @@ func TestDescribeGolden(t *testing.T) {
 		t.Fatalf("check output differs:\n%s", got)
 	}
 }
+
 // TestExamplesParse: every example file is a valid configuration.
 func TestExamplesParse(t *testing.T) {
 	for _, name := range []string{"gpu-server.yaml", "plant-site.yaml"} {

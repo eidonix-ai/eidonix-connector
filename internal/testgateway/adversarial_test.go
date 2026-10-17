@@ -15,7 +15,7 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-const adversarialChat = "chat:\n  - name: test\n    url: %s\n    models: any\n"
+const adversarialChat = "  test:\n    address: %s\n    allowed-endpoints: [POST /v1/chat/completions, POST /v1/responses, GET /v1/models]\n"
 
 func TestAdversarialPathsNeverContactUpstream(t *testing.T) {
 	var hits atomic.Int64
@@ -43,7 +43,7 @@ func TestAdversarialHeadersAndRedirect(t *testing.T) {
 		w.WriteHeader(302)
 	}))
 	defer up.Close()
-	rig := newRig(t, adversarialChat+"    api_key: local\n", up.URL)
+	rig := newRig(t, adversarialChat+"    api-key: local\n", up.URL)
 	req, _ := http.NewRequest("POST", "http://connector/v1/chat/completions", strings.NewReader("{}"))
 	req.Header.Set("Content-Type", "application/json")
 	for _, h := range []string{"Authorization", "Cookie", "X-Forwarded-For", "FileUrl"} {
@@ -78,7 +78,7 @@ func TestAdversarialConcurrencyAndCancelBeforeHeaders(t *testing.T) {
 		close(stopped)
 	}))
 	defer up.Close()
-	rig := newRig(t, adversarialChat+"    max_concurrent_requests: 1\n    idle_timeout: 2s\n", up.URL)
+	rig := newRig(t, adversarialChat+"    max-concurrent-requests: 1\n    idle-timeout: 2s\n", up.URL)
 	ctx, cancel := context.WithCancel(context.Background())
 	req, _ := http.NewRequestWithContext(ctx, "POST", "http://connector/v1/chat/completions", strings.NewReader("{}"))
 	req.Header.Set("Content-Type", "application/json")
@@ -121,7 +121,7 @@ func TestAdversarialActiveSSEHasNoTotalCap(t *testing.T) {
 		}
 	}))
 	defer up.Close()
-	rig := newRig(t, adversarialChat+"    idle_timeout: 120ms\n", up.URL)
+	rig := newRig(t, adversarialChat+"    idle-timeout: 120ms\n", up.URL)
 	resp, b := request(t, rig.g, "POST", "/v1/chat/completions", "application/json", "{}")
 	if resp.StatusCode != 200 || !strings.Contains(string(b), "data: 11") {
 		t.Fatalf("stream cut%d %q", resp.StatusCode, b)
@@ -142,7 +142,7 @@ func TestAdversarialOneWayWebSocketActivity(t *testing.T) {
 		}
 	}))
 	defer up.Close()
-	rig := newRig(t, "realtime:\n  - name: test\n    url: %s\n    idle_timeout: 120ms\n", up.URL)
+	rig := newRig(t, "  test:\n    address: %s\n    allowed-endpoints: [WEBSOCKET /v1/stream, GET /v1/config]\n    idle-timeout: 120ms\n", up.URL)
 	d := websocket.Dialer{TLSClientConfig: rig.server.Client().Transport.(*http.Transport).TLSClientConfig.Clone()}
 	ws, _, e := d.Dial("wss"+strings.TrimPrefix(rig.server.URL, "https")+"/services/test/v1/stream", http.Header{"Authorization": {"Bearer " + testToken}})
 	if e != nil {
@@ -165,7 +165,7 @@ func TestAdversarialSilentResponseHitsIdle(t *testing.T) {
 		close(stopped)
 	}))
 	defer up.Close()
-	rig := newRig(t, adversarialChat+"    idle_timeout: 120ms\n", up.URL)
+	rig := newRig(t, adversarialChat+"    idle-timeout: 120ms\n", up.URL)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	req, _ := http.NewRequestWithContext(ctx, "POST", "http://connector/v1/chat/completions", strings.NewReader("{}"))
