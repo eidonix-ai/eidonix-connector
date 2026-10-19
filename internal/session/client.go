@@ -21,6 +21,7 @@ import (
 	"net/url"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -29,6 +30,36 @@ type Handler interface {
 	HelloServices() []protocol.Service
 	StatusServices() []protocol.ServiceStatus
 }
+
+// Refuser is an optional Handler capability. A draining session answers each
+// stream that still arrives by reading its header and replying with the closed
+// error code (see DrainRefusal) instead of serving it; a handler without it
+// has such streams closed unanswered.
+type Refuser interface {
+	RefuseStream(ctx context.Context, c net.Conn, code string)
+}
+
+// DrainRefusal is the closed error code a draining session answers streams
+// with. It is "busy": the request was never forwarded to a service, and a
+// gateway already treats busy as "try another eligible session".
+const DrainRefusal = "busy"
+
+// State is a snapshot of one session's connection, passed to Options.OnState
+// whenever it changes.
+type State struct {
+	Connected   bool
+	SessionID   string
+	Hub         string // the gateway's name for this connector (auth_ok org)
+	Since       time.Time
+	Draining    bool
+	DrainingAt  time.Time
+	LastError   string
+	LastErrorAt time.Time
+}
+
+// errDrained ends connect once a requested drain has finished.
+var errDrained = errors.New("session drained")
+
 type Options struct {
 	Server, Token, Version string
 	// Site is the connector's name in Setup, sent in hello.
@@ -40,6 +71,17 @@ type Options struct {
 	started     time.Time
 	refresh     func(context.Context) error
 	Proxy       func(*http.Request) (*url.URL, error)
+	// Drain, when closed, drains the session: the connector tells the
+	// gateway (a draining control message), refuses streams that still arrive
+	// and returns nil once the streams already running have finished. Without
+	// a connection it just stops reconnecting. Cancel ctx to end stragglers.
+	Drain <-chan struct{}
+	// OnState, if set, is called (never concurrently) when the connection
+	// is established, ends, starts draining or fails.
+	OnState func(State)
+	// onEstablished and onDraining are called by connect.
+	onEstablished func(sessionID, hub string)
+	onDraining    func()
 }
 
 var processInstance = sync.OnceValues(protocol.NewInstanceID)
@@ -66,14 +108,46 @@ func RunOptions(ctx context.Context, o Options, h Handler) error {
 		o.MaxStreams = 128
 	}
 	o.started = processStarted
+	var mu sync.Mutex
+	var state State
+	update := func(change func(*State)) {
+		mu.Lock()
+		defer mu.Unlock()
+		change(&state)
+		if o.OnState != nil {
+			o.OnState(state)
+		}
+	}
+	o.onEstablished = func(id, hub string) {
+		update(func(s *State) { s.Connected, s.SessionID, s.Hub, s.Since = true, id, hub, time.Now() })
+	}
+	o.onDraining = func() {
+		update(func(s *State) { s.Draining, s.DrainingAt = true, time.Now() })
+	}
+	drained := func() bool {
+		select {
+		case <-o.Drain:
+			return true
+		default:
+			return false
+		}
+	}
 	delay := time.Second
-	for ctx.Err() == nil {
+	for ctx.Err() == nil && !drained() {
 		started := time.Now()
 		e = connect(ctx, u.String(), instance, o, h)
 		if ctx.Err() != nil {
+			update(func(s *State) { s.Connected = false })
 			break
 		}
+		if errors.Is(e, errDrained) || drained() {
+			update(func(s *State) { s.Connected = false })
+			return nil
+		}
 		slog.Warn("upstream session ended", "error", e)
+		update(func(s *State) {
+			s.Connected, s.Draining, s.LastError, s.LastErrorAt = false, false, e.Error(), time.Now()
+		})
 		if time.Since(started) > time.Minute {
 			delay = time.Second
 		}
@@ -81,6 +155,8 @@ func RunOptions(ctx context.Context, o Options, h Handler) error {
 		timer := time.NewTimer(wait)
 		select {
 		case <-ctx.Done():
+			timer.Stop()
+		case <-o.Drain:
 			timer.Stop()
 		case <-timer.C:
 		}
@@ -142,10 +218,17 @@ func connect(ctx context.Context, endpoint, instance string, o Options, h Handle
 	defer cancel()
 	done := make(chan struct{})
 	defer close(done)
+	var established atomic.Bool
 	go func() {
 		select {
 		case <-ctx.Done():
 			mux.Close()
+		case <-o.Drain:
+			// A drain asked for before the session is up just abandons it;
+			// an established session drains in the loop below.
+			if !established.Load() {
+				mux.Close()
+			}
 		case <-done:
 		}
 	}()
@@ -194,7 +277,11 @@ func connect(ctx context.Context, endpoint, instance string, o Options, h Handle
 	}
 	control.SetDeadline(time.Time{})
 	sessionCtx = protocol.WithSessionID(sessionCtx, auth.SessionID)
-	slog.Info("upstream session established", "session", auth.SessionID, "org", auth.Org, "accepted", len(ack.Accepted))
+	established.Store(true)
+	if o.onEstablished != nil {
+		o.onEstablished(auth.SessionID, auth.Org)
+	}
+	slog.Info("upstream session established", "session", auth.SessionID, "hub", auth.Org, "accepted", len(ack.Accepted))
 	for _, r := range ack.Rejected {
 		slog.Warn("upstream rejected service", "service", r.Name, "reason", r.Reason)
 	}
@@ -203,7 +290,8 @@ func connect(ctx context.Context, endpoint, instance string, o Options, h Handle
 		limit = ack.Limits.MaxStreams
 	}
 	failures := make(chan error, 2)
-	go func() { failures <- controlLoop(sessionCtx, control, reader, h, o.started) }()
+	draining := make(chan struct{})
+	go func() { failures <- controlLoop(sessionCtx, control, reader, h, o.started, draining) }()
 	acceptDone := make(chan struct{})
 	var workers sync.WaitGroup
 	defer func() {
@@ -212,7 +300,15 @@ func connect(ctx context.Context, endpoint, instance string, o Options, h Handle
 		<-acceptDone
 		workers.Wait()
 	}()
+	// serving counts streams being served, refusing the ones answered while
+	// draining; both change under mu, and once draining is set no stream is
+	// served any more.
+	var mu sync.Mutex
+	var serving, refusing int
+	isDraining := false
+	idle := make(chan struct{})
 	slots := make(chan struct{}, limit)
+	refuser, _ := h.(Refuser)
 	go func() {
 		defer close(acceptDone)
 		for {
@@ -221,16 +317,47 @@ func connect(ctx context.Context, endpoint, instance string, o Options, h Handle
 				failures <- err
 				return
 			}
+			mu.Lock()
+			if isDraining {
+				// Not served: the gateway should have stopped sending, so this
+				// one raced the draining message. Answer it with DrainRefusal.
+				if refuser == nil || refusing >= maxRefusals {
+					mu.Unlock()
+					stream.Close()
+					continue
+				}
+				refusing++
+				mu.Unlock()
+				workers.Add(1)
+				go func() {
+					defer workers.Done()
+					defer func() { mu.Lock(); refusing--; mu.Unlock() }()
+					defer stream.Close()
+					refuser.RefuseStream(sessionCtx, stream, DrainRefusal)
+				}()
+				continue
+			}
 			select {
 			case slots <- struct{}{}:
+				serving++
+				mu.Unlock()
 				workers.Add(1)
 				go func() {
 					defer workers.Done()
 					defer func() { <-slots }()
 					defer stream.Close()
+					defer func() {
+						mu.Lock()
+						serving--
+						if isDraining && serving == 0 {
+							close(idle)
+						}
+						mu.Unlock()
+					}()
 					h.ServeStream(sessionCtx, stream)
 				}()
 			default:
+				mu.Unlock()
 				stream.Close()
 			}
 		}
@@ -240,9 +367,45 @@ func connect(ctx context.Context, endpoint, instance string, o Options, h Handle
 		return ctx.Err()
 	case e := <-failures:
 		return e
+	case <-o.Drain:
 	}
+	// Drain: tell the gateway, stop serving new streams, and wait for the ones
+	// running (ctx ends them if the caller's bound passes first).
+	if o.onDraining != nil {
+		o.onDraining()
+	}
+	slog.Info("upstream session draining", "session", auth.SessionID)
+	mu.Lock()
+	isDraining = true
+	if serving == 0 {
+		close(idle)
+	}
+	mu.Unlock()
+	close(draining)
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case e := <-failures:
+		return e
+	case <-idle:
+	}
+	// Let refusals already under way finish before the connection closes.
+	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+		mu.Lock()
+		n := refusing
+		mu.Unlock()
+		if n == 0 {
+			break
+		}
+	}
+	return errDrained
 }
-func controlLoop(ctx context.Context, c net.Conn, r *bufio.Reader, h Handler, started time.Time) error {
+
+// maxRefusals bounds the streams a draining session answers at once; further
+// ones are closed unanswered.
+const maxRefusals = 16
+
+func controlLoop(ctx context.Context, c net.Conn, r *bufio.Reader, h Handler, started time.Time, draining <-chan struct{}) error {
 	var writeMu sync.Mutex
 	write := func(v any) error {
 		writeMu.Lock()
@@ -266,6 +429,12 @@ func controlLoop(ctx context.Context, c net.Conn, r *bufio.Reader, h Handler, st
 				return
 			case <-finished:
 				return
+			case <-draining:
+				draining = nil
+				if e := write(protocol.Control{V: protocol.Version, Type: protocol.MessageDraining}); e != nil {
+					c.Close()
+					return
+				}
 			case <-ticker.C:
 				services := h.StatusServices()
 				encoded, _ := json.Marshal(services)

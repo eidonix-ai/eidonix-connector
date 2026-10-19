@@ -61,11 +61,20 @@ func ValidateConfig(ctx context.Context, cfg *config.Config) error {
 	_, err := prepare(ctx, cfg, "")
 	return err
 }
+
+// Run keeps the upstream session for cfg until ctx ends.
 func Run(ctx context.Context, cfg *config.Config, h Handler, version string) error {
+	return RunWith(ctx, cfg, h, version, nil, nil)
+}
+
+// RunWith is Run with a drain signal and a state callback (see Options.Drain
+// and Options.OnState). It returns nil after a completed drain.
+func RunWith(ctx context.Context, cfg *config.Config, h Handler, version string, drain <-chan struct{}, onState func(State)) error {
 	o, e := prepare(ctx, cfg, version)
 	if e != nil {
 		return e
 	}
+	o.Drain, o.OnState = drain, onState
 	stop := make(chan struct{})
 	defer close(stop)
 	go func() {
