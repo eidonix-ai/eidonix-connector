@@ -248,8 +248,8 @@ header, `application` and `for`; connectors before v0.4 ignore unknown fields
 no longer sent. So deployed connectors keep working; upgrading only adds the
 new log fields and `status`.
 
-Comments, templates and docs here that say "the name Cletus uses" become "the
-name applications use".
+Comments, templates and docs that named one application now say "the name
+applications use".
 
 ### 6.1 Connector v0.4 (optional for the hub, worth doing)
 
