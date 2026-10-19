@@ -49,9 +49,12 @@ Control uses newline-delimited JSON, at most 64 KiB per line including the newli
 | Connector → gateway | `hello` | `site`, `instance_id`, `version`, `os`, `arch`, `capabilities`, `services` |
 | Gateway → connector | `hello_ack` | `accepted:[name]`, `rejected:[{name,reason}]`, `limits:{max_streams}` |
 | Connector → gateway | `status` | `services`, `uptime_s`; every 15 seconds and whenever status changes |
+| Connector → gateway | `draining` | none; the connector will serve no more streams on this session and closes it when its running streams finish. Optional: a gateway that predates it ignores it |
 | Gateway → connector | `ping` | Heartbeat; the gateway closes after three missed replies |
 | Connector → gateway | `pong` | Reply to `ping` |
 | Gateway → connector | `close` | `reason`; terminates the session |
+
+**Draining.** A connector that reloads its configuration or stops opens (for a reload) a new session first, then sends `{"v":3,"type":"draining"}` on the old session's control stream. From then on it serves no new stream on that session: a stream that still arrives (it raced the message) is read to its header and answered with the closed error `busy` (HTTP 429, or the storage `busy` result), without reaching any service, so the gateway can retry it on another session. The connector keeps answering `ping` and sending `status` on the draining session, and closes it when its running streams have finished or after a bound (the longest `idle-timeout` of the old file for a reload, at most 15 minutes; `--drain-timeout` for a stop). A gateway should stop opening streams on a session that sent `draining`, route to its other sessions, and not treat the later close as a failure. Two sessions from one process share the process `X-Eidonix-Instance` and a site name, so a gateway must not close an existing session when another connects with the same instance id.
 
 `site` is the connector's name as configured on its machine. The gateway compares it with the connector's name in Setup; when they differ it sends `{"v":3,"type":"close","reason":"site_mismatch"}` instead of `hello_ack` and closes the session. The connector reports this as a configuration error and keeps retrying with backoff.
 

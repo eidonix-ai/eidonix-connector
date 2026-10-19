@@ -1,6 +1,6 @@
 # Implementation status
 
-Module `github.com/eidonix-ai/eidonix-connector`, Apache-2.0. Version 0.3.0.
+Module `github.com/eidonix-ai/eidonix-connector`, Apache-2.0. Version 0.4.0.
 
 ## Implemented
 
@@ -20,7 +20,7 @@ Module `github.com/eidonix-ai/eidonix-connector`, Apache-2.0. Version 0.3.0.
 - Connector-side storage: six operations confined to one bucket,
   SSE-C/SSE-S3/none, read-only services, verified commits, abandoned-upload
   cleanup, read-only checks; `move-to-root` for v0.2 folders.
-- Access log with caller metadata; SIGHUP reload and SIGUSR1 log reopen.
+- Access log with caller metadata and the `application`/`for` labels; SIGHUP reload that opens a new session and drains the old one; SIGINT/SIGTERM drain; SIGUSR1 log reopen; `status` file and command.
 - Static Linux amd64/arm64 builds and `.deb`/`.rpm`/`.apk` packages, systemd
   and OpenRC services, distroless image.
 - `cmd/test-gateway`, a loopback development peer speaking v3 (not a

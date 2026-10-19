@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.4.0 (unreleased)
+
+### Connector
+
+Compatible with v0.3 files and gateways (protocol v3 is unchanged; a gateway
+that does not know `draining` ignores it).
+
+- **Reload without dropping traffic.** SIGHUP loads and validates the file (a
+  rejected file keeps the running configuration), opens a new session with
+  the new services and, once it is established, drains the old session: it
+  sends a `draining` control message, answers any stream that still arrives
+  with `busy` (never forwarded to a service), lets running streams finish and
+  closes, after at most the longest `idle-timeout` of the old file (15
+  minutes at most). If the new session is not up within a minute the old one
+  keeps serving and the log says why. The last hour's counters carry over.
+- **Graceful stop.** SIGINT/SIGTERM drain the same way, bounded by the new
+  `run --drain-timeout` (default 10m); a second signal stops at once. The
+  systemd unit now has `TimeoutStopSec=11min` and the OpenRC script waits 11
+  minutes before KILL, so a restart after an upgrade no longer cuts long
+  generations. Docker: use `--stop-timeout 660`.
+- **`eidonix-connector status`** (and `--json`, `--file`): connected or not,
+  the hub and since when, the last connection error, sessions draining, and
+  each service's health, requests in flight, limit, and requests and errors in
+  the last hour. The running connector writes
+  `/run/eidonix-connector/status.json` (`status-file:` in the file; atomic;
+  every 15 seconds and on every session change; no secrets).
+- **Access log** gains `application` and `for`, the labels the calling
+  application sets (storage lines too). The legacy `org_*` and `user_key_id`
+  fields stay for older gateways. The `auth_ok` display name is logged as `hub`.
+- Wording: examples, templates and docs say "the name applications use"
+  instead of naming one application. The example storage bucket is
+  `my-bucket`.
+
 ## 0.3.0 (unreleased)
 
 **Breaking: sites and services instead of types; protocol v3.** Convert a

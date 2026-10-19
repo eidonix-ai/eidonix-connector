@@ -15,7 +15,8 @@ Eidonix, not here.
 [examples/plant-site.yaml](../examples/plant-site.yaml). After every edit run
 `eidonix-connector check`, then `systemctl reload eidonix-connector` (or
 `rc-service eidonix-connector reload`). A reload that fails validation keeps
-the running configuration.
+the running configuration; a good one does not drop traffic (the new session
+comes up first, the old one drains; see [installation](INSTALL.md#4-changes-and-logs)).
 
 A v0.2 file (services grouped by type) is refused with the command that
 converts it; see [installation](INSTALL.md#upgrading-from-v02).
@@ -55,7 +56,33 @@ converts it; see [installation](INSTALL.md#upgrading-from-v02).
 | `upstream.proxy` | Optional `http://host:port` (or `https://`) web proxy for the upstream connection only. Services are never reached through it. |
 | `upstream.ca-certificate` | Optional PEM certificate added to the system's trusted roots for the upstream connection (for networks that inspect TLS with their own CA). |
 | `access-log` | Absolute path of the request log. Default `/var/log/eidonix-connector/access.log`. |
+| `status-file` | Absolute path of the status file the running connector rewrites every 15 seconds and whenever its session changes. Default `/run/eidonix-connector/status.json`; the directory is created if missing (`0750`, the file `0640`). `eidonix-connector status` reads it. |
 | `services` | The services, by name. |
+
+## Status
+
+`eidonix-connector status [--file PATH] [--json]` prints the status file:
+connected or not, the hub URL and the name the hub gives this connector, the
+session id and since when, the last connection error and when, sessions still
+draining (id, since, requests in flight), and per service its name, kind,
+health, requests in flight, `max-concurrent-requests`, and requests and
+errors over the last hour. An error is a request the connector refused or
+ended (it has an error code in the access log) or that the service answered
+with 5xx; for storage, an operation that did not end `ok`. The counters
+survive a reload. Without `--file` the command reads the default path, or
+`status-file` of the file named by `--config` when given. A file not updated
+for 45 seconds is reported as a connector that is not running. The file holds
+no secrets. `--json` prints the same fields as JSON:
+
+```json
+{"version": "0.4.0", "site": "plant-a", "pid": 812, "updated_at": "2026-10-19T10:00:15Z",
+ "connected": true, "hub_url": "https://connect.example.com", "hub": "plant-a",
+ "session_id": "…", "connected_since": "2026-10-19T08:00:02Z",
+ "last_error": "…", "last_error_at": "…",
+ "draining": [{"session_id": "…", "since": "…", "in_flight": 2}],
+ "services": [{"name": "chat", "kind": "http", "healthy": true, "in_flight": 3,
+               "max_concurrent": 32, "requests_1h": 120, "errors_1h": 4}]}
+```
 
 ## HTTP services
 

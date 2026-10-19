@@ -50,7 +50,8 @@ File permissions: ok (0640 root:eidonix-connector). Secrets set: token.
 
 | Command | |
 | --- | --- |
-| `eidonix-connector run [--config PATH]` | Connect and share the configured services. SIGHUP reloads the file; SIGUSR1 reopens the access log. |
+| `eidonix-connector run [--config PATH]` | Connect and share the configured services. SIGHUP reloads the file without dropping running requests; SIGINT/SIGTERM drain for up to `--drain-timeout` (default 10m), a second one stops at once; SIGUSR1 reopens the access log. |
+| `eidonix-connector status [--file PATH] [--json]` | Show whether the running connector is connected, each service's health and load, and its requests and errors in the last hour. |
 | `eidonix-connector check [--config PATH]` | Validate the file and explain it. `--redacted` prints the file with every secret replaced by `•••• (set)`, for an auditor or a support ticket. `--write-probe` also tests writing to storage. |
 | `eidonix-connector init [PATH]` | Write the commented blank configuration. |
 | `eidonix-connector generate-key` | Print a new storage `encryption-key`. |
