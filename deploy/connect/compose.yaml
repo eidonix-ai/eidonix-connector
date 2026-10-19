@@ -1,0 +1,52 @@
+# eidonix-connect on the hub host. No published ports:
+#   - eidonix-edge: the TLS front proxies wss://connect.example.com to
+#     connect:<public> (the session port);
+#   - eidonix-connect: applications use http://connect:<local>/<site>/<service>/…;
+#   - eidonix-connect-admin: an admin UI reads http://connect:<local>/v1/catalog.
+# All three networks are created outside this file (docker network create …).
+#
+# The file /etc/eidonix-connect/connect.yaml holds the server key and every
+# site token: chown root:65532 and chmod 0640 so only root and the hub's user
+# can read it. Edits are picked up within seconds; no restart is needed.
+#
+# Rotate the access log with: docker compose kill -s USR1 connect
+name: eidonix-connect
+services:
+  connect:
+    build:
+      context: ../..
+      dockerfile: deploy/connect/Dockerfile
+    image: eidonix-connect:0.4.0
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    stop_grace_period: 10s
+    volumes:
+      - /etc/eidonix-connect/connect.yaml:/etc/eidonix-connect/connect.yaml:ro
+      - access-log:/var/log/eidonix-connect
+    networks:
+      eidonix-connect:
+        aliases: [connect]
+      eidonix-edge:
+        aliases: [connect]
+      eidonix-connect-admin:
+        aliases: [connect]
+    healthcheck:
+      test: ["CMD", "/usr/bin/eidonix-connect", "status", "--healthz", "--config", "/etc/eidonix-connect/connect.yaml"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: "5"}
+volumes:
+  access-log:
+networks:
+  eidonix-connect:
+    external: true
+  eidonix-edge:
+    external: true
+  eidonix-connect-admin:
+    external: true

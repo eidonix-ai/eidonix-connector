@@ -6,5 +6,6 @@ GO_VERSION=go1.27.2
 mkdir -p dist
 for arch in amd64 arm64; do
   CGO_ENABLED=0 GOOS=linux GOARCH=$arch go build -trimpath -buildvcs=false -ldflags "-s -w -buildid= -X main.version=$VERSION" -o "dist/eidonix-connector-linux-$arch" ./cmd/eidonix-connector
+  CGO_ENABLED=0 GOOS=linux GOARCH=$arch go build -trimpath -buildvcs=false -ldflags "-s -w -buildid= -X main.version=$VERSION" -o "dist/eidonix-connect-linux-$arch" ./cmd/eidonix-connect
   CGO_ENABLED=0 GOOS=linux GOARCH=$arch go build -trimpath -buildvcs=false -ldflags "-s -w -buildid=" -o "dist/test-gateway-linux-$arch" ./cmd/test-gateway
 done
