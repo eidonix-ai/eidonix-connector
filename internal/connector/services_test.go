@@ -103,7 +103,7 @@ func TestAllowlistJSON(t *testing.T) {
 		t.Fatalf("%d %s", resp.StatusCode, got)
 	}
 	record := lastAccess(t, cfg.AccessLog)
-	if record["model"] != "jina-reranker" || record["upstream_model"] != "jina-reranker-v3" || record["status"] != float64(200) || record["org_slug"] != "example-org" || record["user_key_id"] != "42" || record["org_id"] != "7" || record["request_id"] != "req-1" || record["kind"] != "http" {
+	if record["model"] != "jina-reranker" || record["upstream_model"] != "jina-reranker-v3" || record["status"] != float64(200) || record["org_slug"] != "example-org" || record["user_key_id"] != "42" || record["org_id"] != "7" || record["request_id"] != "req-1" || record["kind"] != "http" || record["application"] != "app-one" || record["for"] != "acct-9" {
 		t.Fatalf("access %v", record)
 	}
 	if strings.Contains(fmt.Sprint(record), "documents") {
@@ -222,7 +222,7 @@ func TestAllowlistMultipart(t *testing.T) {
 }
 
 // TestModelListReachesServer: GET /v1/models goes to the server (the
-// connector no longer answers it); hello advertises the names Cletus uses.
+// connector no longer answers it); hello advertises the names applications use.
 func TestModelListReachesServer(t *testing.T) {
 	f := &fakeServer{models: `{"data":[{"id":"jina-reranker-v3"}]}`}
 	x := newConnector(t, testConfig(t, rerankYAML, f.start(t).URL))
@@ -405,10 +405,10 @@ func TestStreamMetadataInAccessLogOnRefusal(t *testing.T) {
 	x := newConnector(t, cfg)
 	exchange(t, x, "chat", get("/admin"))
 	r := lastAccess(t, cfg.AccessLog)
-	if r["error"] != "path_not_allowed" || r["status"] != float64(403) || r["service"] != "chat" || r["org_slug"] != "example-org" || r["path"] != "/admin" || r["method"] != "GET" {
+	if r["error"] != "path_not_allowed" || r["status"] != float64(403) || r["service"] != "chat" || r["org_slug"] != "example-org" || r["application"] != "app-one" || r["for"] != "acct-9" || r["path"] != "/admin" || r["method"] != "GET" {
 		t.Fatal(r)
 	}
-	for _, k := range []string{"time", "session", "service", "kind", "method", "path", "status", "bytes_in", "bytes_out", "duration_ms", "model", "org_slug", "org_id", "user_key_id", "request_id", "upstream_host", "error"} {
+	for _, k := range []string{"time", "session", "service", "kind", "method", "path", "status", "bytes_in", "bytes_out", "duration_ms", "model", "org_slug", "org_id", "user_key_id", "application", "for", "request_id", "upstream_host", "error"} {
 		if _, ok := r[k]; !ok {
 			t.Fatalf("access log lacks %s: %v", k, r)
 		}

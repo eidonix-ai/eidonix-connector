@@ -12,7 +12,7 @@ import (
 )
 
 // Storage is an s3 service's S3-compatible backend. The whole bucket belongs
-// to Cletus. Fields after MaxFileSize are internal defaults, not settings.
+// to the hub's applications. Fields after MaxFileSize are internal defaults, not settings.
 type Storage struct {
 	// Endpoint is the service URL (http://host:port or https://host[:port]).
 	Endpoint      string

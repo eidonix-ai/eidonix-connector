@@ -10,6 +10,9 @@ command_args="run --config /etc/eidonix-connector/connector.yaml"
 command_user="eidonix-connector:eidonix-connector"
 supervisor="supervise-daemon"
 respawn_delay=5
+# A stop drains: the connector finishes running requests (its --drain-timeout
+# is 10 minutes) before exiting. Wait 11 minutes before KILL.
+retry="TERM/660/KILL/5"
 respawn_max=0
 umask=0077
 required_files="/etc/eidonix-connector/connector.yaml"
@@ -18,8 +21,13 @@ error_logger="logger -t eidonix-connector -p daemon.err"
 extra_commands="checkconfig"
 extra_started_commands="reload reopen"
 description_checkconfig="Check the configuration and explain what it shares"
-description_reload="Reload the configuration (ends active streams)"
+description_reload="Reload the configuration without dropping running requests"
 description_reopen="Reopen the access log after rotation"
+
+start_pre() {
+	# Where "eidonix-connector status" reads the running connector's status.
+	checkpath --directory --owner eidonix-connector:eidonix-connector --mode 0750 /run/eidonix-connector
+}
 
 depend() {
 	need net

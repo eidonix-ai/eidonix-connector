@@ -142,7 +142,7 @@ func TestUnknownSettingNamesLineAndService(t *testing.T) {
 		t.Fatalf("got  %v\nwant %s", err, want)
 	}
 	_, err = parse(t, "service:\n  a: {}\n")
-	if err == nil || !strings.HasPrefix(err.Error(), `line 6: unknown setting "service" (expected one of: site, upstream, access-log, services)`) {
+	if err == nil || !strings.HasPrefix(err.Error(), `line 6: unknown setting "service" (expected one of: site, upstream, access-log, status-file, services)`) {
 		t.Fatal(err)
 	}
 	_, err = Parse([]byte("site: s\nupstream:\n  url: https://connect.example.com\n  tokn: x\n"))
@@ -166,7 +166,7 @@ func TestValidationErrors(t *testing.T) {
 		{svc + "    models:\n      srv-a: {alias: x}\n      x:\n", `line 12: service "a": models uses the name "x" twice`},
 		{svc + "    models: any\n", `line 10: service "a": models: any is gone in v0.3`},
 		{svc + "    models:\n      srv: {name: x}\n", `line 11: unknown setting "name" in service "a" model "srv"`},
-		{svc + "    models:\n      srv: x\n", `line 11: service "a": model "srv": expected {alias: <name Cletus uses>}`},
+		{svc + "    models:\n      srv: x\n", `line 11: service "a": model "srv": expected {alias: <name applications use>}`},
 		{"services:\n  a:\n    address: http://192.0.2.5:8000\n    allowed-endpoints: [POST /x]\n", `line 8: service "a": address must be host:port (plain HTTP) or https://host:port; write "192.0.2.5:8000" without http://`},
 		{"services:\n  a:\n    address: 192.0.2.5\n    allowed-endpoints: [POST /x]\n", `line 8: service "a": address must be host:port`},
 		{"services:\n  a:\n    address: https://192.0.2.5:8000/v1\n    allowed-endpoints: [POST /x]\n", `line 8: service "a": address must be host:port (plain HTTP) or https://host:port, without a path`},
@@ -325,5 +325,20 @@ func TestSecretsListed(t *testing.T) {
 	}
 	if got := strings.Join(c.Secrets(), ", "); got != "token, api-key (gpu1)" {
 		t.Fatal(got)
+	}
+}
+
+func TestStatusFileSetting(t *testing.T) {
+	base := "site: test-site\nupstream:\n  url: https://connect.example.com\n  token: " + testToken + "\n  public-keys: [" + testKey + "]\n"
+	c, err := Parse([]byte(base))
+	if err != nil || c.StatusFile != DefaultStatusFile {
+		t.Fatalf("default %q %v", c.StatusFile, err)
+	}
+	c, err = Parse([]byte(base + "status-file: /tmp/s.json\n"))
+	if err != nil || c.StatusFile != "/tmp/s.json" {
+		t.Fatalf("%q %v", c.StatusFile, err)
+	}
+	if _, err = Parse([]byte(base + "status-file: s.json\n")); err == nil || !strings.Contains(err.Error(), "status-file must be an absolute path") {
+		t.Fatal(err)
 	}
 }

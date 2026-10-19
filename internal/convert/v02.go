@@ -2,7 +2,7 @@ package convert
 
 // v0.2 → v0.3: services grouped by type become services by name, each type's
 // fixed request list becomes allowed-endpoints (through api_path), model
-// aliases turn around (<name on the server>: {alias: <name Cletus uses>}),
+// aliases turn around (<name on the server>: {alias: <name applications use>}),
 // and limits the old type implied are written out where they differ from the
 // v0.3 defaults, so the converted file behaves as the old one did.
 

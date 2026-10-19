@@ -27,7 +27,7 @@ const (
 )
 
 var (
-	topFields      = []string{"site", "upstream", "access-log", "services"}
+	topFields      = []string{"site", "upstream", "access-log", "status-file", "services"}
 	upstreamFields = []string{"url", "token", "public-keys", "proxy", "ca-certificate"}
 	httpFields     = []string{"kind", "address", "allowed-endpoints", "models", "health", "api-key", "max-concurrent-requests", "max-requests-per-minute", "idle-timeout"}
 	s3Fields       = []string{"kind", "address", "bucket", "access-key", "secret-key", "region", "encryption", "encryption-key", "ca-certificate", "read-only", "max-file-size", "max-concurrent-requests"}
@@ -100,7 +100,7 @@ func Parse(data []byte) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	c := &Config{AccessLog: DefaultAccessLog}
+	c := &Config{AccessLog: DefaultAccessLog, StatusFile: DefaultStatusFile}
 	site := fields["site"]
 	if site == nil {
 		return nil, &lineError{root.Line, "site is required: the connector's name in Eidonix Setup"}
@@ -124,6 +124,14 @@ func Parse(data []byte) (*Config, error) {
 		}
 		if !filepath.IsAbs(c.AccessLog) {
 			return nil, at(n, "", "access-log must be an absolute path")
+		}
+	}
+	if n := fields["status-file"]; n != nil {
+		if c.StatusFile, err = text(n, "", "status-file"); err != nil {
+			return nil, err
+		}
+		if !filepath.IsAbs(c.StatusFile) {
+			return nil, at(n, "", "status-file must be an absolute path")
 		}
 	}
 	section := fields["services"]
@@ -522,7 +530,7 @@ func modelName(n *yaml.Node, ctx string) (string, error) {
 }
 
 // parseModels reads a list of names, or a map of <name on the server>:
-// {alias: <name Cletus uses>} (alias optional).
+// {alias: <name applications use>} (alias optional).
 func parseModels(n *yaml.Node, ctx string) (Models, error) {
 	m := Models{Target: map[string]string{}}
 	add := func(item *yaml.Node, name, target string) error {
@@ -569,7 +577,7 @@ func parseModels(n *yaml.Node, ctx string) (Models, error) {
 					}
 				}
 			default:
-				return m, at(v, ctx, "model %q: expected {alias: <name Cletus uses>}, found %s", server, describe(v))
+				return m, at(v, ctx, "model %q: expected {alias: <name applications use>}, found %s", server, describe(v))
 			}
 			if err := add(n.Content[i], name, server); err != nil {
 				return m, err
@@ -577,7 +585,7 @@ func parseModels(n *yaml.Node, ctx string) (Models, error) {
 		}
 	}
 	if len(m.Names) == 0 || len(m.Names) > MaxModels {
-		return m, at(n, ctx, "models must be a list of 1 to %d names ([a, b]) or <name on the server>: {alias: <name Cletus uses>} entries", MaxModels)
+		return m, at(n, ctx, "models must be a list of 1 to %d names ([a, b]) or <name on the server>: {alias: <name applications use>} entries", MaxModels)
 	}
 	return m, nil
 }

@@ -116,7 +116,7 @@ unless the service is read-only.
   it plainly.
 
 Content protected from every party except the user needs client-side
-encryption before upload (Cletus vault folders); such files pass through the
+encryption before upload (for example an application's vault folders); such files pass through the
 connector and storage as ciphertext whatever the `encryption` setting.
 
 ## Access log

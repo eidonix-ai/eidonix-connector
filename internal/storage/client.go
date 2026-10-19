@@ -44,6 +44,8 @@ type AuditEntry struct {
 	OrgSlug          string    `json:"org_slug"`
 	OrgID            string    `json:"org_id"`
 	UserKeyID        string    `json:"user_key_id"`
+	Application      string    `json:"application"`
+	For              string    `json:"for"`
 	RequestID        string    `json:"request_id"`
 	UploadAgeSeconds int64     `json:"upload_age_s,omitempty"`
 }

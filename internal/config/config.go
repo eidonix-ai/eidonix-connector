@@ -21,6 +21,10 @@ import (
 const (
 	DefaultPath      = "/etc/eidonix-connector/connector.yaml"
 	DefaultAccessLog = "/var/log/eidonix-connector/access.log"
+	// DefaultStatusFile is where the running connector writes its status
+	// (eidonix-connector status reads it); the packaged service creates the
+	// directory.
+	DefaultStatusFile = "/run/eidonix-connector/status.json"
 	// ServiceGroup is the packaged service account's group.
 	ServiceGroup = "eidonix-connector"
 	maxFileBytes = 1 << 20
@@ -43,6 +47,9 @@ type Config struct {
 	Upstream  Upstream
 	Services  []Service
 	AccessLog string
+	// StatusFile is the absolute path of the status file the running
+	// connector keeps up to date.
+	StatusFile string
 	// File describes the file Load read (zero for Parse).
 	File FileInfo
 }
@@ -75,7 +82,7 @@ type Service struct {
 	Storage               *Storage
 }
 
-// Models is a service's model list. Names are the names Cletus uses, in file
+// Models is a service's model list. Names are the names applications use, in file
 // order; Target maps each to the model's name on the server. Without names
 // the connector does not inspect request bodies.
 type Models struct {

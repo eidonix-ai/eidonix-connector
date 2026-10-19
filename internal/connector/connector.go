@@ -54,6 +54,7 @@ type service struct {
 	allow   *models.Policy // nil when the service does not check models
 	// Size limits (MaxRequestBytes, MaxResponseBytes; tests lower them).
 	maxRequest, maxResponse int64
+	stats                   *rolling
 }
 
 // healthInterval is HealthInterval; tests shorten it.
@@ -83,7 +84,7 @@ func New(c *config.Config) (*Connector, error) {
 		x.audit = f
 	}
 	for _, cfg := range c.Services {
-		s := &service{cfg: cfg, last: time.Now(), tokens: math.Max(1, float64(cfg.MaxRequestsPerMinute)), maxRequest: MaxRequestBytes, maxResponse: MaxResponseBytes}
+		s := &service{cfg: cfg, last: time.Now(), tokens: math.Max(1, float64(cfg.MaxRequestsPerMinute)), maxRequest: MaxRequestBytes, maxResponse: MaxResponseBytes, stats: &rolling{}}
 		if cfg.Models.Set() {
 			s.allow = models.New(cfg.Models.Names, cfg.Models.Target)
 		}
@@ -387,6 +388,9 @@ func (x *Connector) ServeStream(parent context.Context, raw net.Conn) {
 		if !storageAudit {
 			entry.Time, entry.Session, entry.DurationMS = time.Now().UTC(), protocol.SessionID(ctx), time.Since(start).Milliseconds()
 			x.writeAccess(entry)
+			if entry.Kind != "" {
+				x.count(entry.Service, entry.Error != "" || entry.Status >= 500)
+			}
 		}
 	}()
 	var e error
@@ -396,6 +400,7 @@ func (x *Connector) ServeStream(parent context.Context, raw net.Conn) {
 		return
 	}
 	entry.Service, entry.RequestID, entry.OrgID, entry.OrgSlug, entry.UserKeyID = h.Service, h.RequestID, h.OrgID, h.OrgSlug, h.UserKeyID
+	entry.Application, entry.For = h.Application, h.For
 	x.mu.Lock()
 	s := x.services[h.Service]
 	var storageHandler *storage.Handler
@@ -793,6 +798,9 @@ func (x *Connector) refreshDNS(ctx context.Context, s *service) {
 }
 
 func (x *Connector) auditStorage(entry storage.AuditEntry) {
+	if entry.Origin == "upstream" {
+		x.count(entry.Service, entry.Status != "ok")
+	}
 	x.auditMu.Lock()
 	defer x.auditMu.Unlock()
 	if x.audit != nil {

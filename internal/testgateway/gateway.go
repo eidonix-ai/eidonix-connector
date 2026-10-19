@@ -36,6 +36,8 @@ type Gateway struct {
 	AuthAttempts atomic.Int64
 	// Caller metadata stamped on every stream header this gateway opens.
 	OrgID, OrgSlug, UserKeyID string
+	// Application and For are the labels stamped on every stream header.
+	Application, For string
 	// Site, when set, is the connector's name: a hello naming another site
 	// is closed with reason site_mismatch, as the real gateway does.
 	Site string
@@ -46,6 +48,8 @@ type peer struct {
 	slots        chan struct{}
 	capabilities map[string]bool
 	lastStatus   atomic.Pointer[protocol.Status]
+	// draining is set when the connector sends draining: the peer gets no new streams.
+	draining atomic.Bool
 }
 
 func New(token string, key ed25519.PrivateKey) (*Gateway, error) {
@@ -292,6 +296,8 @@ func (g *Gateway) connect(w http.ResponseWriter, r *http.Request) {
 		switch m.Type {
 		case protocol.MessagePong:
 			lastPong.Store(time.Now().UnixNano())
+		case protocol.MessageDraining:
+			p.draining.Store(true)
 		case protocol.MessageStatus:
 			var status protocol.Status
 			if m.Decode(&status) != nil {
@@ -310,9 +316,10 @@ func (g *Gateway) open(ctx context.Context, service, kind string) (net.Conn, fun
 func (g *Gateway) openHeader(ctx context.Context, header protocol.StreamHeader) (net.Conn, func(), error) {
 	g.mu.Lock()
 	header.OrgID, header.OrgSlug, header.UserKeyID = g.OrgID, g.OrgSlug, g.UserKeyID
+	header.Application, header.For = g.Application, g.For
 	var chosen *peer
 	for p := range g.sessions {
-		if r, ok := p.services[header.Service]; ok && !p.mux.IsClosed() {
+		if r, ok := p.services[header.Service]; ok && !p.mux.IsClosed() && !p.draining.Load() {
 			if header.Kind == "storage" && (r.Kind != protocol.KindS3 || !p.capabilities[protocol.CapabilityStorage]) {
 				continue
 			}
@@ -586,4 +593,17 @@ func (g *Gateway) LastStatus() *protocol.Status {
 		}
 	}
 	return nil
+}
+
+// Sessions returns how many sessions are live and how many of those sent draining.
+func (g *Gateway) Sessions() (live, draining int) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for p := range g.sessions {
+		live++
+		if p.draining.Load() {
+			draining++
+		}
+	}
+	return
 }

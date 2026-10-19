@@ -20,7 +20,7 @@ repository.
 Alpine (for example a small LXC container):
 
 ```sh
-apk add --allow-untrusted ./eidonix-connector_0.3.0_amd64.apk   # after sha256sum -c
+apk add --allow-untrusted ./eidonix-connector_0.4.0_amd64.apk   # after sha256sum -c
 ```
 
 The `.apk` is not signed with an apk key; its integrity comes from the
@@ -29,13 +29,13 @@ verified checksums, which is why `--allow-untrusted` is needed.
 Debian / Ubuntu:
 
 ```sh
-sudo apt install ./eidonix-connector_0.3.0_amd64.deb
+sudo apt install ./eidonix-connector_0.4.0_amd64.deb
 ```
 
 Fedora / RHEL / Rocky / Alma:
 
 ```sh
-sudo dnf install ./eidonix-connector_0.3.0_amd64.rpm
+sudo dnf install ./eidonix-connector_0.4.0_amd64.rpm
 ```
 
 ## 2. Fill in the configuration
@@ -97,8 +97,23 @@ hosts the unit runs as the default `unconfined_service_t`.
 
 After editing the file: `eidonix-connector check`, then
 `systemctl reload eidonix-connector` (or `rc-service eidonix-connector reload`).
-A reload that fails validation is logged and the running configuration stays;
-a successful one reconnects and ends active streams.
+A reload that fails validation is logged and the running configuration stays.
+A successful one does not drop traffic: the connector opens a new session with
+the new file, and once that is up it drains the old one (tells the hub to send
+it nothing new, lets the requests already running finish, then closes it), for
+at most the longest `idle-timeout` in the old file (never more than 15
+minutes). If the new session cannot be established within a minute, the old
+one keeps serving and the log says why. Stopping the service drains the same
+way for up to `--drain-timeout` (default 10 minutes; the packaged units allow
+11 minutes before they kill the process); a second SIGTERM stops at once.
+Restarting after an upgrade therefore waits for running requests to finish.
+
+`eidonix-connector status` shows whether the connector is connected, to which
+hub and since when, the last connection error, each service's health,
+requests in flight and the requests and errors of the last hour. It reads
+`/run/eidonix-connector/status.json`, which the running connector rewrites
+every 15 seconds (`0640`, in a `0750` directory owned by the service
+account), so run it with `sudo`. `--json` prints the file itself.
 
 Every request is logged to `/var/log/eidonix-connector/access.log` (one JSON
 line; never request or response contents). logrotate rotates it daily, keeps
@@ -114,16 +129,29 @@ owned by UID 65532 with mode `0600`, and point `access-log` at a writable
 volume.
 
 ```sh
-docker build -t eidonix-connector:0.3.0 .
+docker build -t eidonix-connector:0.4.0 .
 install -m 0600 -o 65532 -g 65532 connector.yaml /srv/eidonix-connector/connector.yaml
 docker run -d --name eidonix-connector --restart unless-stopped \
   --read-only --cap-drop ALL --security-opt no-new-privileges \
   -v /srv/eidonix-connector/connector.yaml:/etc/eidonix-connector/connector.yaml:ro \
   -v /srv/eidonix-connector/log:/var/log/eidonix-connector \
-  eidonix-connector:0.3.0
+  eidonix-connector:0.4.0
 ```
 
-(`/srv/eidonix-connector/log` must be writable by UID 65532.)
+(`/srv/eidonix-connector/log` must be writable by UID 65532.) Add
+`--stop-timeout 660` so a stop can drain, and, for `eidonix-connector status`
+(`docker exec eidonix-connector eidonix-connector status`), a writable status
+directory: `--tmpfs /run/eidonix-connector:uid=65532,mode=0750`.
+
+## Upgrading from v0.3
+
+v0.4 reads v0.3 files unchanged and speaks the same protocol (v3), so it works
+with v0.3 gateways: one that does not know the `draining` message ignores it
+(the old session simply keeps receiving requests until it closes), and
+`application` and `for` in the access log stay empty unless the hub sends
+them. Install the package and restart the service; from then on reloads and
+stops drain instead of cutting running requests. Docker users add
+`--stop-timeout 660` (see above).
 
 ## Upgrading from v0.2
 

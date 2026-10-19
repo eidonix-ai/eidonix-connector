@@ -45,6 +45,7 @@ func (c *Config) Describe() string {
 	w.Flush()
 	b.Write(table.Bytes())
 	fmt.Fprintf(&b, "Logs every request to %s (never contents).\n", c.AccessLog)
+	fmt.Fprintf(&b, "Keeps its status in %s (eidonix-connector status shows it).\n", c.StatusFile)
 	if c.File.Path != "" {
 		fmt.Fprintf(&b, "File permissions: ok (%04o %s:%s). ", uint32(c.File.Mode), c.File.Owner, c.File.Group)
 	}
