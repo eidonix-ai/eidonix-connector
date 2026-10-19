@@ -256,3 +256,19 @@ func FuzzToken(f *testing.F) {
 	f.Add("cxn_ABCDEFGHIJKLMNOP_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
 	f.Fuzz(func(t *testing.T, s string) { ParseToken(s) })
 }
+
+func TestStreamHeaderApplicationLabels(t *testing.T) {
+	var b bytes.Buffer
+	if err := WriteStreamHeader(&b, StreamHeader{V: Version, Service: "chat", Kind: "http", RequestID: "r1", Application: "app-one", For: "acct/7"}); err != nil {
+		t.Fatal(err)
+	}
+	h, err := ReadStreamHeader(bufio.NewReader(&b))
+	if err != nil || h.Application != "app-one" || h.For != "acct/7" {
+		t.Fatalf("got %+v, %v", h, err)
+	}
+	b.Reset()
+	b.WriteString(`{"v":3,"service":"chat","kind":"http","request_id":"r1","for":"` + strings.Repeat("x", MaxStreamMetadataBytes+1) + `"}` + "\n")
+	if _, err := ReadStreamHeader(bufio.NewReader(&b)); err == nil {
+		t.Fatal("oversized for label accepted")
+	}
+}

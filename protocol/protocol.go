@@ -32,7 +32,8 @@ const (
 	// HeaderError carries the closed error code on connector-generated HTTP responses.
 	HeaderError = "X-Eidonix-Error"
 
-	// MaxStreamMetadataBytes bounds request_id, org_id, org_slug and user_key_id.
+	// MaxStreamMetadataBytes bounds request_id, application, for and the legacy
+	// org_id, org_slug and user_key_id.
 	MaxStreamMetadataBytes = 64
 )
 
@@ -54,6 +55,10 @@ const (
 	MessagePing       = "ping"
 	MessagePong       = "pong"
 	MessageClose      = "close"
+	// MessageDraining (connector → hub) asks the hub to open no new streams
+	// on this session; the connector closes it once its streams finish.
+	// Gateways that predate it ignore it.
+	MessageDraining = "draining"
 )
 
 var servicePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,39}$`)
@@ -195,13 +200,19 @@ func WriteMessage(w io.Writer, m any) error { return WriteJSONLine(w, MaxControl
 // the caller as the gateway reports it. The connector records them in its
 // access log and does not authorise on them.
 type StreamHeader struct {
-	V           int     `json:"v"`
-	Service     string  `json:"service"`
-	Kind        string  `json:"kind"`
-	RequestID   string  `json:"request_id"`
-	OrgID       string  `json:"org_id,omitempty"`
-	OrgSlug     string  `json:"org_slug,omitempty"`
-	UserKeyID   string  `json:"user_key_id,omitempty"`
+	V         int    `json:"v"`
+	Service   string `json:"service"`
+	Kind      string `json:"kind"`
+	RequestID string `json:"request_id"`
+	OrgID     string `json:"org_id,omitempty"`
+	OrgSlug   string `json:"org_slug,omitempty"`
+	UserKeyID string `json:"user_key_id,omitempty"`
+	// Application and For are labels the calling application sets (hub
+	// headers X-Eidonix-Application / X-Eidonix-For): which application sent
+	// the request and whom it serves. Logged, never authorised on. Connectors
+	// that predate them ignore them.
+	Application string  `json:"application,omitempty"`
+	For         string  `json:"for,omitempty"`
 	Op          string  `json:"op,omitempty"`
 	Key         string  `json:"key,omitempty"`
 	SrcKey      string  `json:"src_key,omitempty"`
@@ -254,7 +265,7 @@ func WriteJSONLine(w io.Writer, max int, value any) error {
 func ReadStreamHeader(r *bufio.Reader) (StreamHeader, error) {
 	var h StreamHeader
 	err := ReadJSONLine(r, MaxHeaderBytes, &h)
-	if err == nil && (h.V != Version || h.Service == "" || h.Kind == "" || !printable(h.RequestID, MaxStreamMetadataBytes) || !printable(h.OrgID, MaxStreamMetadataBytes) || !printable(h.OrgSlug, MaxStreamMetadataBytes) || !printable(h.UserKeyID, MaxStreamMetadataBytes)) {
+	if err == nil && (h.V != Version || h.Service == "" || h.Kind == "" || !printable(h.RequestID, MaxStreamMetadataBytes) || !printable(h.OrgID, MaxStreamMetadataBytes) || !printable(h.OrgSlug, MaxStreamMetadataBytes) || !printable(h.UserKeyID, MaxStreamMetadataBytes) || !printable(h.Application, MaxStreamMetadataBytes) || !printable(h.For, MaxStreamMetadataBytes)) {
 		err = errors.New("invalid stream header")
 	}
 	return h, err
