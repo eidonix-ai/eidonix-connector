@@ -142,7 +142,7 @@ func TestUnknownSettingNamesLineAndService(t *testing.T) {
 		t.Fatalf("got  %v\nwant %s", err, want)
 	}
 	_, err = parse(t, "service:\n  a: {}\n")
-	if err == nil || !strings.HasPrefix(err.Error(), `line 6: unknown setting "service" (expected one of: site, upstream, access-log, services)`) {
+	if err == nil || !strings.HasPrefix(err.Error(), `line 6: unknown setting "service" (expected one of: site, upstream, access-log, status-file, services)`) {
 		t.Fatal(err)
 	}
 	_, err = Parse([]byte("site: s\nupstream:\n  url: https://connect.example.com\n  tokn: x\n"))
@@ -325,5 +325,20 @@ func TestSecretsListed(t *testing.T) {
 	}
 	if got := strings.Join(c.Secrets(), ", "); got != "token, api-key (gpu1)" {
 		t.Fatal(got)
+	}
+}
+
+func TestStatusFileSetting(t *testing.T) {
+	base := "site: test-site\nupstream:\n  url: https://connect.example.com\n  token: " + testToken + "\n  public-keys: [" + testKey + "]\n"
+	c, err := Parse([]byte(base))
+	if err != nil || c.StatusFile != DefaultStatusFile {
+		t.Fatalf("default %q %v", c.StatusFile, err)
+	}
+	c, err = Parse([]byte(base + "status-file: /tmp/s.json\n"))
+	if err != nil || c.StatusFile != "/tmp/s.json" {
+		t.Fatalf("%q %v", c.StatusFile, err)
+	}
+	if _, err = Parse([]byte(base + "status-file: s.json\n")); err == nil || !strings.Contains(err.Error(), "status-file must be an absolute path") {
+		t.Fatal(err)
 	}
 }

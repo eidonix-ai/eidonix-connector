@@ -18,6 +18,7 @@ upstream:
   #   -----END CERTIFICATE-----
 
 # access-log: /var/log/eidonix-connector/access.log   # default; one line per request, never contents
+# status-file: /run/eidonix-connector/status.json     # default; what "eidonix-connector status" shows
 
 # The services this machine shares, by name (lowercase letters, digits and -,
 # unique in this file). The connector reaches ONLY the addresses listed here,

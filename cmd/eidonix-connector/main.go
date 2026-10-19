@@ -6,11 +6,11 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
-	"log"
 	"os"
 	"os/signal"
 	"strings"
@@ -18,16 +18,17 @@ import (
 	"time"
 
 	"github.com/eidonix-ai/eidonix-connector/internal/config"
-	"github.com/eidonix-ai/eidonix-connector/internal/connector"
 	"github.com/eidonix-ai/eidonix-connector/internal/convert"
-	"github.com/eidonix-ai/eidonix-connector/internal/session"
+	"github.com/eidonix-ai/eidonix-connector/internal/status"
 	"github.com/eidonix-ai/eidonix-connector/internal/storage"
 )
 
-var version = "0.3.0"
+var version = "0.4.0"
 
 const usage = `usage:
-  eidonix-connector run [--config PATH]                          connect and share the configured services
+  eidonix-connector run [--config PATH] [--drain-timeout 10m]    connect and share the configured services
+                                                                 (SIGHUP reloads without dropping traffic; SIGTERM drains, then stops)
+  eidonix-connector status [--file PATH] [--json]                show the running connector's connection and services
   eidonix-connector check [--config PATH] [--redacted] [--write-probe]
                                                                  explain the configuration (--redacted: print it with secrets hidden)
   eidonix-connector init [PATH]                                  write a blank configuration (stdout without PATH)
@@ -58,6 +59,9 @@ func execute(args []string, out, errOut io.Writer, uid int) error {
 	site := fs.String("site", "", "convert: the connector's name in Eidonix Setup")
 	from := fs.String("from", "", "storage move-to-root: the folder to move (ending in /)")
 	dryRun := fs.Bool("dry-run", false, "storage move-to-root: report what would be moved, change nothing")
+	drainTimeout := fs.Duration("drain-timeout", defaultDrainTimeout, "run: how long a stop (SIGINT/SIGTERM) lets running requests finish before ending them")
+	statusFile := fs.String("file", "", "status: the status file (default: status-file of --config when given, else "+config.DefaultStatusFile+")")
+	asJSON := fs.Bool("json", false, "status: print the status file as JSON")
 	rest, err := parseInterleaved(fs, args[1:])
 	if err != nil {
 		return err
@@ -71,6 +75,15 @@ func execute(args []string, out, errOut io.Writer, uid int) error {
 	}
 	if *site != "" && command != "convert" {
 		return errors.New("--site applies to convert only")
+	}
+	if (*statusFile != "" || *asJSON) && command != "status" {
+		return errors.New("--file and --json apply to status only")
+	}
+	if *drainTimeout != defaultDrainTimeout && command != "run" {
+		return errors.New("--drain-timeout applies to run only")
+	}
+	if *drainTimeout <= 0 {
+		return errors.New("--drain-timeout must be positive")
 	}
 	if (*from != "" || *dryRun) && command != "storage" {
 		return errors.New("--from and --dry-run apply to storage move-to-root only")
@@ -87,7 +100,23 @@ func execute(args []string, out, errOut io.Writer, uid int) error {
 		if err != nil {
 			return err
 		}
-		return run(*path, cfg, errOut)
+		signals := make(chan os.Signal, 4)
+		signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGUSR1)
+		defer signal.Stop(signals)
+		return run(*path, cfg, errOut, runOptions{signals: signals, drainTimeout: *drainTimeout})
+	case "status":
+		file := *statusFile
+		if file == "" {
+			file = config.DefaultStatusFile
+			fs.Visit(func(f *flag.Flag) {
+				if f.Name == "config" {
+					if cfg, err := config.Load(*path); err == nil {
+						file = cfg.StatusFile
+					}
+				}
+			})
+		}
+		return showStatus(file, *asJSON, out)
 	case "check":
 		return check(*path, *redacted, *writeProbe, out)
 	case "init":
@@ -253,73 +282,18 @@ func checkStorage(svc config.Service, writeProbe bool, out io.Writer) error {
 	return err
 }
 
-type runningContext struct {
-	ctx    context.Context
-	cancel context.CancelFunc
-}
-
-func newRunningContext() *runningContext {
-	ctx, cancel := context.WithCancel(context.Background())
-	return &runningContext{ctx, cancel}
-}
-
-// run serves until SIGINT/SIGTERM. SIGHUP reloads the file (a rejected reload
-// keeps the running configuration); SIGUSR1 reopens the access log.
-func run(path string, cfg *config.Config, errOut io.Writer) error {
-	logger := log.New(errOut, "", log.LstdFlags)
-	if err := session.ValidateConfig(context.Background(), cfg); err != nil {
-		return err
-	}
-	signals := make(chan os.Signal, 2)
-	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGUSR1)
-	defer signal.Stop(signals)
-	handler, err := connector.New(cfg)
+// showStatus prints the status file at path as a table, or as the file's own
+// JSON.
+func showStatus(path string, asJSON bool, out io.Writer) error {
+	f, err := status.Read(path)
 	if err != nil {
 		return err
 	}
-	active := newRunningContext()
-	done := make(chan error, 1)
-	start := func() { go func() { done <- session.Run(active.ctx, cfg, handler, version) }() }
-	start()
-	defer func() { active.cancel(); handler.Close() }()
-	for {
-		select {
-		case err := <-done:
-			if errors.Is(err, context.Canceled) {
-				return nil
-			}
-			return err
-		case sig := <-signals:
-			if sig == syscall.SIGUSR1 {
-				if err := handler.ReopenLogs(); err != nil {
-					logger.Printf("access log reopen failed: %v", err)
-				}
-				continue
-			}
-			if sig != syscall.SIGHUP {
-				active.cancel()
-				<-done
-				return nil
-			}
-			replacement, err := config.Load(path)
-			if err == nil {
-				err = session.ValidateConfig(context.Background(), replacement)
-			}
-			var next *connector.Connector
-			if err == nil {
-				next, err = connector.New(replacement)
-			}
-			if err != nil {
-				logger.Printf("reload rejected, keeping the running configuration: %v", err)
-				continue
-			}
-			active.cancel()
-			<-done
-			handler.Close()
-			cfg, handler = replacement, next
-			active = newRunningContext()
-			start()
-			logger.Print("configuration reloaded; access log reopened; active streams ended")
-		}
+	if asJSON {
+		enc := json.NewEncoder(out)
+		enc.SetIndent("", "  ")
+		return enc.Encode(f)
 	}
+	status.Print(out, f, time.Now())
+	return nil
 }

@@ -10,8 +10,16 @@ User=eidonix-connector
 Group=eidonix-connector
 ExecStart=/usr/bin/eidonix-connector run --config /etc/eidonix-connector/connector.yaml
 ExecReload=/bin/kill -HUP $MAINPID
+# A stop (and so an upgrade's restart) drains: the connector finishes the
+# requests running (up to its own 10 minute --drain-timeout) before exiting.
+# Leave systemd room beyond that before it sends SIGKILL.
+KillSignal=SIGTERM
+TimeoutStopSec=11min
 Restart=always
 RestartSec=5
+# /run/eidonix-connector/status.json, read by "eidonix-connector status".
+RuntimeDirectory=eidonix-connector
+RuntimeDirectoryMode=0750
 NoNewPrivileges=yes
 CapabilityBoundingSet=
 AmbientCapabilities=

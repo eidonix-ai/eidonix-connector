@@ -12,4 +12,5 @@ Shares 10 services and can reach only these machines:
   image        http  10.0.0.30:8010  POST /v1/images/*   models: qwen-image   health: GET /health   max concurrent: 1
   voice-live   http  10.0.0.30:8011  WEBSOCKET /v1/stream, GET /v1/config   models: not checked   health: GET /health   max concurrent: 4
 Logs every request to /var/log/eidonix-connector/access.log (never contents).
+Keeps its status in /run/eidonix-connector/status.json (eidonix-connector status shows it).
 File permissions: ok (0640 root:eidonix-connector). Secrets set: token.
