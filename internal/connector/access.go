@@ -23,6 +23,8 @@ type accessEntry struct {
 	OrgSlug       string    `json:"org_slug"`
 	OrgID         string    `json:"org_id"`
 	UserKeyID     string    `json:"user_key_id"`
+	Application   string    `json:"application"`
+	For           string    `json:"for"`
 	RequestID     string    `json:"request_id"`
 	UpstreamHost  string    `json:"upstream_host"`
 	Error         string    `json:"error"`

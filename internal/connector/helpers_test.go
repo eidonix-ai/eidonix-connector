@@ -66,7 +66,7 @@ func exchange(t testing.TB, x *Connector, service, request string) (*http.Respon
 	done := make(chan struct{})
 	go func() { defer close(done); x.ServeStream(context.Background(), a) }()
 	go func() {
-		protocol.WriteStreamHeader(b, protocol.StreamHeader{V: protocol.Version, Service: service, Kind: "http", RequestID: "req-1", OrgID: "7", OrgSlug: "example-org", UserKeyID: "42"})
+		protocol.WriteStreamHeader(b, protocol.StreamHeader{V: protocol.Version, Service: service, Kind: "http", RequestID: "req-1", OrgID: "7", OrgSlug: "example-org", UserKeyID: "42", Application: "app-one", For: "acct-9"})
 		io.WriteString(b, request)
 	}()
 	resp, err := http.ReadResponse(bufio.NewReader(b), nil)

@@ -24,7 +24,7 @@ services:
   #     - POST /v1/*                      #   methods: GET, POST, PUT, DELETE, WEBSOCKET
   #     - GET /v1/models
   #   models: [model-name]                # optional: only these models; without it bodies are not inspected
-  #   # models:                           # or rename: <name on the server>: {alias: <name Cletus uses>}
+  #   # models:                           # or rename: <name on the server>: {alias: <name applications use>}
   #   #   org/model-name: {alias: model}
   #   health: /health                     # optional: GET every 15 s; without it, reachability only
   #   # api-key: sk-…                     # only if the server needs a key (sent as Authorization: Bearer)
@@ -39,7 +39,7 @@ services:
   # files:                                # your own S3-compatible storage (MinIO, Ceph, RustFS, …)
   #   kind: s3
   #   address: https://s3.example.com:9000
-  #   bucket: cletus                      # must already exist; the whole bucket belongs to Cletus
+  #   bucket: my-bucket                   # must already exist; the whole bucket belongs to the hub's applications
   #   access-key: …
   #   secret-key: …
   #   # region: us-east-1                 # default

@@ -522,7 +522,7 @@ func modelName(n *yaml.Node, ctx string) (string, error) {
 }
 
 // parseModels reads a list of names, or a map of <name on the server>:
-// {alias: <name Cletus uses>} (alias optional).
+// {alias: <name applications use>} (alias optional).
 func parseModels(n *yaml.Node, ctx string) (Models, error) {
 	m := Models{Target: map[string]string{}}
 	add := func(item *yaml.Node, name, target string) error {
@@ -569,7 +569,7 @@ func parseModels(n *yaml.Node, ctx string) (Models, error) {
 					}
 				}
 			default:
-				return m, at(v, ctx, "model %q: expected {alias: <name Cletus uses>}, found %s", server, describe(v))
+				return m, at(v, ctx, "model %q: expected {alias: <name applications use>}, found %s", server, describe(v))
 			}
 			if err := add(n.Content[i], name, server); err != nil {
 				return m, err
@@ -577,7 +577,7 @@ func parseModels(n *yaml.Node, ctx string) (Models, error) {
 		}
 	}
 	if len(m.Names) == 0 || len(m.Names) > MaxModels {
-		return m, at(n, ctx, "models must be a list of 1 to %d names ([a, b]) or <name on the server>: {alias: <name Cletus uses>} entries", MaxModels)
+		return m, at(n, ctx, "models must be a list of 1 to %d names ([a, b]) or <name on the server>: {alias: <name applications use>} entries", MaxModels)
 	}
 	return m, nil
 }

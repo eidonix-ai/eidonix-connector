@@ -75,7 +75,7 @@ type Service struct {
 	Storage               *Storage
 }
 
-// Models is a service's model list. Names are the names Cletus uses, in file
+// Models is a service's model list. Names are the names applications use, in file
 // order; Target maps each to the model's name on the server. Without names
 // the connector does not inspect request bodies.
 type Models struct {

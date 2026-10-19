@@ -166,7 +166,8 @@ One JSON line per request, never bodies. HTTP and WebSocket requests:
 | `method`, `path`, `status` | The request as Eidonix sent it and the status returned. |
 | `bytes_in`, `bytes_out`, `duration_ms` | Size and duration. |
 | `model`, `upstream_model` | The model named, and the server's name when it was renamed. |
-| `org_slug`, `org_id`, `user_key_id`, `request_id` | The organization, user key and request id Eidonix reported, matching its usage records. |
+| `application`, `for` | The labels the calling application set (which application, and whom it serves); empty when none. Logged only; never used to authorise. |
+| `org_slug`, `org_id`, `user_key_id`, `request_id` | The organization, user key and request id an older gateway reported (empty from a hub), and the request id, matching the caller's records. |
 | `upstream_host` | Which address served it. |
 | `error` | The error code, if the connector refused or ended the request. |
 

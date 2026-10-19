@@ -396,6 +396,7 @@ func (x *Connector) ServeStream(parent context.Context, raw net.Conn) {
 		return
 	}
 	entry.Service, entry.RequestID, entry.OrgID, entry.OrgSlug, entry.UserKeyID = h.Service, h.RequestID, h.OrgID, h.OrgSlug, h.UserKeyID
+	entry.Application, entry.For = h.Application, h.For
 	x.mu.Lock()
 	s := x.services[h.Service]
 	var storageHandler *storage.Handler

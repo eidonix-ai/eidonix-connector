@@ -166,7 +166,7 @@ func TestValidationErrors(t *testing.T) {
 		{svc + "    models:\n      srv-a: {alias: x}\n      x:\n", `line 12: service "a": models uses the name "x" twice`},
 		{svc + "    models: any\n", `line 10: service "a": models: any is gone in v0.3`},
 		{svc + "    models:\n      srv: {name: x}\n", `line 11: unknown setting "name" in service "a" model "srv"`},
-		{svc + "    models:\n      srv: x\n", `line 11: service "a": model "srv": expected {alias: <name Cletus uses>}`},
+		{svc + "    models:\n      srv: x\n", `line 11: service "a": model "srv": expected {alias: <name applications use>}`},
 		{"services:\n  a:\n    address: http://192.0.2.5:8000\n    allowed-endpoints: [POST /x]\n", `line 8: service "a": address must be host:port (plain HTTP) or https://host:port; write "192.0.2.5:8000" without http://`},
 		{"services:\n  a:\n    address: 192.0.2.5\n    allowed-endpoints: [POST /x]\n", `line 8: service "a": address must be host:port`},
 		{"services:\n  a:\n    address: https://192.0.2.5:8000/v1\n    allowed-endpoints: [POST /x]\n", `line 8: service "a": address must be host:port (plain HTTP) or https://host:port, without a path`},
