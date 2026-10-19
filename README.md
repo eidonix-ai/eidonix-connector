@@ -1,5 +1,16 @@
 # Eidonix connector
 
+Two programs:
+
+| Program | Runs at | Does |
+| --- | --- | --- |
+| `eidonix-connector` | each site | Dials out to the hub and offers the services its file lists (below). |
+| `eidonix-connect` | one cloud host | The hub: accepts connector sessions and makes every connected service reachable on one local port, as `http://connect:8080/<site>/<service>/…` ([hub guide](docs/HUB.md)). |
+
+```
+application ──HTTP──▶ eidonix-connect ◀══ WSS, outbound from the site ══ eidonix-connector ──▶ service
+```
+
 The Eidonix connector lets an organization share chosen services on its own
 hardware (GPU model servers, OCR, conversion, voice, S3-compatible storage)
 with Eidonix, without opening any inbound port. It makes one outbound
@@ -58,8 +69,29 @@ File permissions: ok (0640 root:eidonix-connector). Secrets set: token.
 | `eidonix-connector storage move-to-root SERVICE --from FOLDER/` | Move a storage service's files from a v0.2 folder to the top of its bucket (`--dry-run` to preview). |
 | `eidonix-connector version` | |
 
+## The hub
+
+`eidonix-connect` holds no database: one file,
+`/etc/eidonix-connect/connect.yaml`, lists the sites that may connect, each
+with its token (and optionally which applications may use it). Applications
+on the hub host then use connected services by name: HTTP and SSE streamed
+both ways, WebSocket, a small storage API for `kind: s3` services, and a
+catalog at `/v1/catalog`. Go applications can use the
+[`client`](client) package.
+
+| Command | |
+| --- | --- |
+| `eidonix-connect serve [--config PATH]` | Run the hub; file changes apply by themselves; SIGUSR1 reopens the access log. |
+| `eidonix-connect check [--config PATH]` | Validate the file and explain it (prints the server's public key, never a secret). |
+| `eidonix-connect status [--url URL] [--healthz]` | Sites, sessions and services as a table. |
+| `eidonix-connect token` / `server-key` | Print a new site token / server key. |
+| `eidonix-connect version` | |
+
+The container image and compose file are in [`deploy/connect`](deploy/connect).
+
 ## Documentation
 
+- [Hub](docs/HUB.md): installing and running `eidonix-connect`, its file, logs and the local API; [design](docs/HUB-DESIGN.md).
 - [Installation](docs/INSTALL.md): Alpine (OpenRC), Debian/Ubuntu and RHEL-family (systemd), Docker.
 - [Configuration](docs/CONFIG.md): every setting, how requests are matched and models checked.
 - [Security](docs/SECURITY.md): the trust model and what the connector does and does not protect.
@@ -68,13 +100,14 @@ File permissions: ok (0640 root:eidonix-connector). Secrets set: token.
 
 ## Building
 
-Go 1.27.2. `make` builds static Linux amd64 and arm64 binaries and the
+Go 1.27.2. `make` builds static Linux amd64 and arm64 binaries (connector
+and hub) and the connector's
 `.deb`, `.rpm` and `.apk` packages into `dist/` (packaging needs
 [nfpm](https://nfpm.goreleaser.com/)); `make test` runs `go vet` and the
 race-enabled test suite.
 
 This repository also contains `cmd/test-gateway`, a loopback-only development
-peer that speaks the same protocol:
+peer that speaks the same protocol (for trying a connector without a hub):
 
 ```sh
 go run ./cmd/test-gateway --init --state /tmp/connector-dev --upstream 127.0.0.1:8000

@@ -1,5 +1,8 @@
 # Installation
 
+This page installs the connector at a site. The hub, `eidonix-connect`, runs
+on the cloud host as a container: see [HUB.md](HUB.md#install).
+
 Packages for Linux amd64 and arm64: `.apk` (Alpine, OpenRC), `.deb`
 (Debian/Ubuntu, systemd) and `.rpm` (Fedora/RHEL family, systemd). Each
 installs the binary, the service account `eidonix-connector`, the service

@@ -1,5 +1,49 @@
 # Changelog
 
+## 0.4.0 (unreleased)
+
+**The hub, `eidonix-connect`.** A second program, for the cloud host:
+it accepts connector sessions (protocol v3, unchanged) and makes every
+connected service reachable on one local port, by site and service name
+([docs/HUB.md](docs/HUB.md), [design](docs/HUB-DESIGN.md)).
+
+- **One file**, `/etc/eidonix-connect/connect.yaml`: `public`, `local`,
+  `server-key`, `access-log` and `sites` (each with `token`, optional
+  `next-token`, `disabled`, `applications`, and per-service
+  `services.<name>.applications`). Strict validation with the line at fault;
+  a permission gate; checked every second and applied without a restart
+  (removing or disabling a site, or rotating its token away, ends its
+  sessions at once); a bad file keeps the last good one.
+- **Local API**: `/<site>/<service>/<path>` for HTTP (streamed both ways,
+  SSE flushed per write, cancelled at the site when the caller goes away)
+  and WebSocket; a storage API for `kind: s3` services (put, get with one
+  range and `If-Match`, head, delete, copy, list); `/v1/catalog` and
+  `/v1/catalog/<site>`; `/healthz`. Errors are
+  `{"error":{"code","message"}}` with `X-Eidonix-Error`.
+- **Labels**: `X-Eidonix-Application` and `X-Eidonix-For` go to the
+  connector in the stream header (`application`, `for`) and into both access
+  logs; a site or service with an `applications` list refuses other
+  applications (`not_allowed`).
+- **Sessions**: the production gateway's session handling (identity proof
+  before the token, site check, v3 limits, per-address and per-token rate
+  limits), several sessions per site with load spread across them, each
+  service's concurrency enforced at the hub (`busy`, 503, `Retry-After: 1`),
+  `draining` honoured, and a draining connector's `busy` refusal retried once
+  on another session.
+- **Commands**: `serve`, `check`, `status` (a table from the catalog;
+  `--healthz` for health checks), `token`, `server-key`, `version`.
+- **Access log**: one JSON line per request (application, for, site,
+  service, kind, method, path or storage op, status, bytes, duration,
+  request id, error; never bodies, queries or keys); SIGUSR1 reopens it.
+- **Container**: `deploy/connect/Dockerfile` (distroless, uid 65532) and
+  `deploy/connect/compose.yaml` (service `connect` on the external
+  `eidonix-connect`, `eidonix-edge` and `eidonix-connect-admin` networks, no
+  published ports).
+- **`client`**: a Go package for applications using the local API
+  (service URLs, labels, catalog, storage, typed errors).
+- **Protocol docs**: the `draining` control message and the `application`
+  and `for` stream header fields (added in the protocol package earlier).
+
 ## 0.3.0 (unreleased)
 
 **Breaking: sites and services instead of types; protocol v3.** Convert a

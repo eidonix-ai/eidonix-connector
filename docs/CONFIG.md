@@ -1,5 +1,8 @@
 # Configuration
 
+This page is the connector's file. The hub's file,
+`/etc/eidonix-connect/connect.yaml`, is described in [HUB.md](HUB.md#the-file).
+
 The connector reads one file, `/etc/eidonix-connector/connector.yaml` (or
 `--config PATH`). It holds everything the connector needs: the site it
 belongs to, the upstream it connects out to, the services it shares and their

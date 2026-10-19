@@ -2,6 +2,8 @@
 
 The Go `protocol` package defines `eidonix-connector.v3` and is the reference for every byte described here. It imports nothing from the connector, so the gateway vendors it unchanged. Capability strings version additional services independently: `inference/1` and `storage/1`. Capabilities describe the build, not which services happen to be configured. Additive JSON fields are ignored by older peers; breaking changes require a new protocol version. A v3 connector speaks only v3.
 
+The gateway end is `eidonix-connect`, the hub in this repository ([HUB.md](HUB.md)); any other implementation follows the same rules.
+
 v3 changes from v2: `hello` carries the connector's `site`; a service is advertised by `kind` (`http` or `s3`) with its allowed `endpoints` instead of one of twelve types, and `models_any` is gone; a storage service advertises `read_only` and has no folder prefix. Session mechanics, stream headers, storage operations and framing, and the closed error codes are unchanged.
 
 ## Connection and identity
@@ -49,6 +51,7 @@ Control uses newline-delimited JSON, at most 64 KiB per line including the newli
 | Connector → gateway | `hello` | `site`, `instance_id`, `version`, `os`, `arch`, `capabilities`, `services` |
 | Gateway → connector | `hello_ack` | `accepted:[name]`, `rejected:[{name,reason}]`, `limits:{max_streams}` |
 | Connector → gateway | `status` | `services`, `uptime_s`; every 15 seconds and whenever status changes |
+| Connector → gateway | `draining` | No fields. The gateway opens no new streams on this session; the connector closes it once its streams finish. Gateways that predate it ignore it. |
 | Gateway → connector | `ping` | Heartbeat; the gateway closes after three missed replies |
 | Connector → gateway | `pong` | Reply to `ping` |
 | Gateway → connector | `close` | `reason`; terminates the session |
@@ -69,6 +72,8 @@ A `hello` service is:
 
 Encryption is `none`, `sse-s3` or `sse-c`, the owner's choice. A `read_only` service refuses `put`, `delete` and `copy` with `forbidden`. A gateway rejects s3 services advertised without `storage/1` (`storage_capability_missing`) and never opens storage streams to such sessions.
 
+A connector sends `draining` on its old session when it replaces it (reload, stop, upgrade): it first opens a new session, and once that has `auth_ok` and `hello_ack` the old one sends `draining`, keeps answering `ping` and sending `status`, finishes its streams and closes (a normal close, bounded by the connector). Both sessions carry the same `instance_id` (it is per process); gateways must not deduplicate or evict sessions by instance or site. A stream that still reaches a draining session is refused with `busy` (HTTP 429, or a storage `busy` result) without contacting the service, so the gateway may send it once more to another session. A gateway lists a draining session as such until it closes.
+
 A `status` service is `{"name","healthy","in_flight","models"}`. `models` is **always** present: an empty array means the list is now empty, and the gateway must clear its copy. `protocol/testdata/control.jsonl` holds golden lines for every message type.
 
 ## Request headers and inference
@@ -76,10 +81,10 @@ A `status` service is `{"name","healthy","in_flight","models"}`. `models` is **a
 Each request stream starts with one JSON line of at most 4 KiB including the newline:
 
 ```json
-{"v":3,"service":"chat","kind":"http","request_id":"r1","org_id":"7","org_slug":"example-org","user_key_id":"42"}
+{"v":3,"service":"chat","kind":"http","request_id":"r1","application":"app-one","for":"account-7"}
 ```
 
-`service` selects a locally configured service. It never selects a host, port, URL, bucket, filesystem path or command. `request_id` is the gateway's request id; `org_id`, `org_slug` and `user_key_id` identify the organization and user key the gateway is serving. The connector does not authorise on them (deciding which organizations may use a service is the gateway's job); it writes them to its access log so the owner's log matches the gateway's usage records line by line. These four fields are printable ASCII of at most 64 bytes. Unknown fields are ignored. Malformed or oversized headers close the stream without a response. A well-formed unknown `kind` receives this rejection line and then closes:
+`service` selects a locally configured service. It never selects a host, port, URL, bucket, filesystem path or command. `request_id` is the gateway's request id. `application` and `for` are optional labels the calling application set (on the hub, the `X-Eidonix-Application` and `X-Eidonix-For` headers): which application sent the request and whom it serves. The optional `org_id`, `org_slug` and `user_key_id` identify an organization and user key, for gateways that serve organizations; the hub does not send them. The connector does not authorise on any of these; it writes them to its access log so the owner's log matches the gateway's records line by line. Connectors that predate `application` and `for` ignore them. These fields are printable ASCII of at most 64 bytes. Unknown fields are ignored. Malformed or oversized headers close the stream without a response. A well-formed unknown `kind` receives this rejection line and then closes:
 
 ```json
 {"v":3,"ok":false,"error":{"code":"unsupported_kind","message":"unsupported stream kind"}}
@@ -87,7 +92,7 @@ Each request stream starts with one JSON line of at most 4 KiB including the new
 
 `kind:"http"` carries an HTTP/1.1 request and response. The connector canonicalises the origin-form path strictly (no `%`, `..`, `//`, backslash or control bytes; a query only on `GET`, where it is ignored and not forwarded), checks the method and path against the service's `endpoints`, checks the model when the service lists models, builds a new upstream request to the same path, forwards only `Content-Type`, `Accept`, `X-Request-Id`, `Anthropic-Version` and `Anthropic-Beta`, adds the configured `api-key` as `Authorization: Bearer` and streams the response as bytes arrive. It never follows upstream redirects or uses a proxy for upstream calls.
 
-When a service lists models, a `POST` or `PUT` body must be `application/json` or `multipart/form-data` (otherwise `content_type_not_allowed`); its top-level `model` (JSON) or `model` form field (multipart) must be one of the names Cletus uses and is rewritten to the server's name. A request without a model is refused with `model_required` unless exactly one model is listed, which is then filled in. `GET` and `DELETE` requests to such a service may not carry a body. Without models, bodies are not inspected. WebSocket messages are never inspected.
+When a service lists models, a `POST` or `PUT` body must be `application/json` or `multipart/form-data` (otherwise `content_type_not_allowed`); its top-level `model` (JSON) or `model` form field (multipart) must be one of the names applications use and is rewritten to the server's name. A request without a model is refused with `model_required` unless exactly one model is listed, which is then filled in. `GET` and `DELETE` requests to such a service may not carry a body. Without models, bodies are not inspected. WebSocket messages are never inspected.
 
 Connector-generated HTTP errors carry the code in `X-Eidonix-Error` and the body `<code>\n`:
 
@@ -101,7 +106,7 @@ Connector-generated HTTP errors carry the code in `X-Eidonix-Error` and the body
 | 502 | `upstream_unavailable`, `upstream_error`, `response_too_large` |
 | 504 | `upstream_timeout` |
 
-`model_not_allowed` means the request named a model the service does not list; it is never forwarded. `model_required` means the request named no model and the service lists more than one. `upstream_unavailable` means the service's last health check failed. A gateway relays any connector status as-is.
+`model_not_allowed` means the request named a model the service does not list; it is never forwarded. `model_required` means the request named no model and the service lists more than one. `upstream_unavailable` means the service's last health check failed. A gateway relays the status and code; `eidonix-connect` puts every connector refusal in its JSON error shape and reports `busy` as 503 ([HUB-DESIGN.md §4.6](HUB-DESIGN.md#46-errors-and-limits)).
 
 `kind:"websocket"` starts with an HTTP GET upgrade request and response. Relay messages then consist of one type byte (1 text, 2 binary, 8 close), four unsigned big-endian length bytes and the payload, at most 4 MiB. Ping and pong are handled locally. HTTP or WebSocket streams naming an s3 service receive HTTP 403 `path_not_allowed`.
 

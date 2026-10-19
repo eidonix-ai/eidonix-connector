@@ -23,6 +23,10 @@ Module `github.com/eidonix-ai/eidonix-connector`, Apache-2.0. Version 0.3.0.
 - Access log with caller metadata; SIGHUP reload and SIGUSR1 log reopen.
 - Static Linux amd64/arm64 builds and `.deb`/`.rpm`/`.apk` packages, systemd
   and OpenRC services, distroless image.
+- The hub, `eidonix-connect` (`cmd/eidonix-connect`, `internal/hub`): one
+  file with reload, sessions with draining, the local HTTP / SSE / WebSocket
+  / storage API and catalog, access log, container image; the `client`
+  package. Its end-to-end suite runs the real connector against it.
 - `cmd/test-gateway`, a loopback development peer speaking v3 (not a
   production gateway, tenant boundary, revocation service or deployment
   target).
