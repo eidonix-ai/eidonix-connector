@@ -6,8 +6,8 @@
 # All three networks are created outside this file (docker network create …).
 #
 # The file /etc/eidonix-connect/connect.yaml holds the server key and every
-# site token: chown root:65532 and chmod 0640 so only root and the hub's user
-# can read it. Edits are picked up within seconds; no restart is needed.
+# site token: chown root:65532 and chmod 0640 (the directory root:65532 0750)
+# so only root and the hub's user can read it. Edits are picked up within seconds; no restart is needed.
 #
 # Rotate the access log with: docker compose kill -s USR1 connect
 name: eidonix-connect
@@ -23,7 +23,9 @@ services:
     security_opt: [no-new-privileges:true]
     stop_grace_period: 10s
     volumes:
-      - /etc/eidonix-connect/connect.yaml:/etc/eidonix-connect/connect.yaml:ro
+      # The directory, not the file: an editor that saves by rename would
+      # leave a single-file bind mount on the old file.
+      - /etc/eidonix-connect:/etc/eidonix-connect:ro
       - access-log:/var/log/eidonix-connect
     networks:
       eidonix-connect:

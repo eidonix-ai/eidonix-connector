@@ -24,7 +24,7 @@ With Docker Compose (`deploy/connect/compose.yaml`):
 docker network create eidonix-connect          # applications
 docker network create eidonix-edge             # the TLS front proxy
 docker network create eidonix-connect-admin    # an admin UI that reads the catalog
-sudo install -d -m 0750 /etc/eidonix-connect
+sudo install -d -m 0750 -o root -g 65532 /etc/eidonix-connect
 docker run --rm eidonix-connect:0.4.0 server-key        # prints server-key; its public key to stderr
 docker run --rm eidonix-connect:0.4.0 token             # one per site
 sudoedit /etc/eidonix-connect/connect.yaml              # see below
