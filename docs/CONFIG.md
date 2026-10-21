@@ -130,6 +130,54 @@ carry a body. `GET /v1/models`, if allowed, is answered by the server.
 (until the next check succeeds); meanwhile requests get
 `502 upstream_unavailable`.
 
+## Machines
+
+A machine is one host that runs several servers, each on its own port: one
+service name for the whole machine, with its servers listed by port.
+
+```yaml
+services:
+  cn0:                                   # compute node 0
+    address: 10.0.0.30               # the host; https://host for TLS
+    ports:
+      8004:                              # a chat model
+        allowed-endpoints: [POST /v1/*, GET /v1/models]
+        models: [qwen3.5-9b-vision]
+        health: /health
+        max-concurrent-requests: 8
+      8001:                              # embeddings
+        allowed-endpoints: [POST /embeddings]
+        models:
+          nomic-ai/nomic-embed-text-v1.5: {alias: nomic-embed}
+      8002:                              # document parsing
+        allowed-endpoints: [POST /layout-parsing]
+```
+
+| Setting | Meaning |
+| --- | --- |
+| `address` | Required. The machine's host (`10.0.0.30`), or `https://host` for TLS. No port: the ports are listed under `ports`. |
+| `ports` | Required. 1 to 64 ports by number, each with the settings of an HTTP service except `address` (and `kind`): `allowed-endpoints`, `models`, `health`, `api-key`, the limits. |
+
+**Routing.** Callers name the machine (`cn0`), never a port. A request goes
+to the only port that allows it; when several ports allow it, to the port
+that lists the model its JSON body names (`400 model_required` without one,
+`403 model_not_allowed` for a model no such port lists). `GET /v1/models`, when
+several ports allow it, is answered by the connector with their models. So
+that every request has one port: a model may be on only one port of a
+machine, and ports that allow a request in common must all list their
+models; `check` and the connector refuse a file that breaks either rule,
+with the line at fault.
+
+**Health and limits** are per port: each port is checked and limited like an
+HTTP service, and a request for a port that is down gets
+`502 upstream_unavailable` while the others keep working. The machine is
+announced as one service with all its models and endpoints, healthy while any
+port is, and with its ports as `parts` (what each serves and whether it is
+healthy, without its address): Eidonix shows it **ok** with every port up,
+**degraded** with some down and **down** with none up. Its
+`max-concurrent-requests` is its ports' together. `check` and the access log
+name a port as `<machine>:<port>`; the access log's `service` is the machine.
+
 ## Storage (s3 services)
 
 A `kind: s3` service keeps an organization's files in its own S3-compatible

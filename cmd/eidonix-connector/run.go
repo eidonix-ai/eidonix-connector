@@ -181,7 +181,7 @@ func run(path string, cfg *config.Config, errOut io.Writer, o runOptions) error 
 		}
 		f.Site, f.HubURL = shown.cfg.Site, shown.cfg.Upstream.URL
 		for _, s := range shown.handler.Snapshot() {
-			f.Services = append(f.Services, status.Service{Name: s.Name, Kind: s.Kind, Healthy: s.Healthy, InFlight: s.InFlight, MaxConcurrent: s.MaxConcurrent, Requests1h: s.Requests, Errors1h: s.Errors})
+			f.Services = append(f.Services, status.Service{Name: s.Name, Kind: s.Kind, Healthy: s.Healthy, Health: s.Health, InFlight: s.InFlight, MaxConcurrent: s.MaxConcurrent, Requests1h: s.Requests, Errors1h: s.Errors})
 		}
 		if err := status.Write(statusPath, f); err != nil {
 			if lastWriteOK {

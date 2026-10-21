@@ -49,9 +49,12 @@ func (r *rolling) totals(now time.Time) (requests, errors int64) {
 
 // ServiceSnapshot is one service as the status file reports it.
 type ServiceSnapshot struct {
-	Name          string
-	Kind          string
-	Healthy       bool
+	Name    string
+	Kind    string
+	Healthy bool
+	// Health is protocol.HealthOK, HealthDegraded (some of a machine's
+	// ports down) or HealthDown.
+	Health        string
 	InFlight      int
 	MaxConcurrent int
 	// Requests and Errors are the last hour's counts. A request is an error
@@ -69,12 +72,10 @@ func (x *Connector) Snapshot() []ServiceSnapshot {
 	out := make([]ServiceSnapshot, 0, len(x.order))
 	for _, name := range x.order {
 		s := x.services[name]
-		flight := s.flight
-		if s.storage != nil {
-			flight = s.storage.InFlight()
-		}
 		requests, errs := s.stats.totals(now)
-		out = append(out, ServiceSnapshot{Name: name, Kind: s.cfg.Kind, Healthy: x.healthy(s), InFlight: flight, MaxConcurrent: s.cfg.MaxConcurrentRequests, Requests: requests, Errors: errs})
+		healthy := x.healthy(s)
+		out = append(out, ServiceSnapshot{Name: name, Kind: s.cfg.Kind, Healthy: healthy, Health: protocol.Health(healthy, x.parts(s)),
+			InFlight: inFlight(s), MaxConcurrent: s.cfg.MaxConcurrentRequests, Requests: requests, Errors: errs})
 	}
 	return out
 }

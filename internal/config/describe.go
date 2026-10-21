@@ -40,6 +40,13 @@ func (c *Config) Describe() string {
 	var table bytes.Buffer
 	w := tabwriter.NewWriter(&table, 0, 0, 2, ' ', 0)
 	for _, s := range c.Services {
+		if s.Machine() {
+			// A machine: one line per port, named <machine>:<port>.
+			for _, p := range s.Ports {
+				fmt.Fprintf(w, "  %s\t%s\t%s\t%s\n", p.Name, p.Kind, p.Host(), p.details())
+			}
+			continue
+		}
 		fmt.Fprintf(w, "  %s\t%s\t%s\t%s\n", s.Name, s.Kind, s.Host(), s.details())
 	}
 	w.Flush()

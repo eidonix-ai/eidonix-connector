@@ -52,6 +52,9 @@ type service struct {
 	last    time.Time
 	eject   time.Time      // unhealthy until
 	allow   *models.Policy // nil when the service does not check models
+	// ports are a machine's services; a request to the machine is routed
+	// to one of them (route).
+	ports []*service
 	// Size limits (MaxRequestBytes, MaxResponseBytes; tests lower them).
 	maxRequest, maxResponse int64
 	stats                   *rolling
@@ -84,10 +87,7 @@ func New(c *config.Config) (*Connector, error) {
 		x.audit = f
 	}
 	for _, cfg := range c.Services {
-		s := &service{cfg: cfg, last: time.Now(), tokens: math.Max(1, float64(cfg.MaxRequestsPerMinute)), maxRequest: MaxRequestBytes, maxResponse: MaxResponseBytes, stats: &rolling{}}
-		if cfg.Models.Set() {
-			s.allow = models.New(cfg.Models.Names, cfg.Models.Target)
-		}
+		s := newService(cfg)
 		x.services[cfg.Name] = s
 		x.order = append(x.order, cfg.Name)
 		if cfg.Kind == config.KindS3 {
@@ -95,19 +95,46 @@ func New(c *config.Config) (*Connector, error) {
 			go func() { defer x.storageInit.Done(); x.startStorage(ctx, s) }()
 			continue
 		}
-		p, e := network.New(ctx, []string{cfg.URL})
-		if e != nil {
-			x.Close()
-			return nil, fmt.Errorf("service %q: %w", cfg.Name, e)
+		targets := []*service{s}
+		if cfg.Machine() {
+			targets = nil
+			for _, pc := range cfg.Ports {
+				p := newService(pc)
+				s.ports = append(s.ports, p)
+				targets = append(targets, p)
+			}
 		}
-		s.base, _ = url.Parse(cfg.URL)
-		s.policy = p
-		t := &http.Transport{Proxy: nil, DialContext: p.DialContext, DisableCompression: true, MaxResponseHeaderBytes: 64 << 10, ResponseHeaderTimeout: max(120*time.Second, cfg.IdleTimeout)}
-		s.client = &http.Client{Transport: t, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-		go x.health(ctx, s, healthInterval)
-		go x.refreshDNS(ctx, s)
+		for _, t := range targets {
+			if err := x.startHTTP(ctx, t); err != nil {
+				x.Close()
+				return nil, fmt.Errorf("service %q: %w", t.cfg.Name, err)
+			}
+		}
 	}
 	return x, nil
+}
+
+func newService(cfg config.Service) *service {
+	s := &service{cfg: cfg, last: time.Now(), tokens: math.Max(1, float64(cfg.MaxRequestsPerMinute)), maxRequest: MaxRequestBytes, maxResponse: MaxResponseBytes, stats: &rolling{}}
+	if cfg.Models.Set() {
+		s.allow = models.New(cfg.Models.Names, cfg.Models.Target)
+	}
+	return s
+}
+
+// startHTTP pins an http service's address and starts its health checks.
+func (x *Connector) startHTTP(ctx context.Context, s *service) error {
+	p, err := network.New(ctx, []string{s.cfg.URL})
+	if err != nil {
+		return err
+	}
+	s.base, _ = url.Parse(s.cfg.URL)
+	s.policy = p
+	t := &http.Transport{Proxy: nil, DialContext: p.DialContext, DisableCompression: true, MaxResponseHeaderBytes: 64 << 10, ResponseHeaderTimeout: max(120*time.Second, s.cfg.IdleTimeout)}
+	s.client = &http.Client{Transport: t, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	go x.health(ctx, s, healthInterval)
+	go x.refreshDNS(ctx, s)
+	return nil
 }
 func (x *Connector) Close() error {
 	x.cancel()
@@ -117,8 +144,10 @@ func (x *Connector) Close() error {
 		if s.storage != nil {
 			s.storage.Close()
 		}
-		if s.client != nil {
-			s.client.CloseIdleConnections()
+		for _, t := range append([]*service{s}, s.ports...) {
+			if t.client != nil {
+				t.client.CloseIdleConnections()
+			}
 		}
 	}
 	x.mu.Unlock()
@@ -133,7 +162,61 @@ func (x *Connector) healthy(s *service) bool {
 	if s.cfg.Kind == config.KindS3 {
 		return s.storage != nil && s.storage.Healthy()
 	}
+	if s.ports != nil {
+		// A machine takes requests while any port can serve them; its parts
+		// say which are down (degraded).
+		for _, p := range s.ports {
+			if x.healthy(p) {
+				return true
+			}
+		}
+		return false
+	}
 	return !time.Now().Before(s.eject)
+}
+
+// parts are a machine's ports as a gateway sees them (nil otherwise).
+func (x *Connector) parts(s *service) []protocol.ServicePart {
+	var out []protocol.ServicePart
+	for _, p := range s.ports {
+		part := protocol.ServicePart{Models: append([]string{}, p.cfg.Models.Names...), Healthy: x.healthy(p)}
+		for _, e := range p.cfg.Endpoints {
+			part.Endpoints = append(part.Endpoints, e.String())
+		}
+		out = append(out, part)
+	}
+	return out
+}
+
+// advertised are what a service shares: its models and endpoints, a
+// machine's those of all its ports (each once, in file order).
+func advertised(s *service) (models, endpoints []string) {
+	models = []string{}
+	seen := map[string]bool{}
+	for _, t := range append([]*service{s}, s.ports...) {
+		for _, m := range t.cfg.Models.Names {
+			models = append(models, m)
+		}
+		for _, e := range t.cfg.Endpoints {
+			if !seen[e.String()] {
+				seen[e.String()] = true
+				endpoints = append(endpoints, e.String())
+			}
+		}
+	}
+	return models, endpoints
+}
+
+// inFlight is a service's running requests (a machine's: its ports').
+func inFlight(s *service) int {
+	n := s.flight
+	if s.storage != nil {
+		n = s.storage.InFlight()
+	}
+	for _, p := range s.ports {
+		n += p.flight
+	}
+	return n
 }
 
 // HelloServices advertises every configured service.
@@ -143,10 +226,8 @@ func (x *Connector) HelloServices() []protocol.Service {
 	out := []protocol.Service{}
 	for _, name := range x.order {
 		s := x.services[name]
-		a := protocol.Service{Name: name, Kind: s.cfg.Kind, Models: append([]string{}, s.cfg.Models.Names...), MaxConcurrentRequests: s.cfg.MaxConcurrentRequests, Healthy: x.healthy(s)}
-		for _, e := range s.cfg.Endpoints {
-			a.Endpoints = append(a.Endpoints, e.String())
-		}
+		models, endpoints := advertised(s)
+		a := protocol.Service{Name: name, Kind: s.cfg.Kind, Models: models, Endpoints: endpoints, MaxConcurrentRequests: s.cfg.MaxConcurrentRequests, Healthy: x.healthy(s), Parts: x.parts(s)}
 		if st := s.cfg.Storage; st != nil {
 			a.Storage = &protocol.StorageService{MaxKeyBytes: st.MaxKeyBytes(), MaxObjectBytes: st.MaxFileSize, Encryption: st.Encryption, ReadOnly: st.ReadOnly}
 		}
@@ -162,11 +243,8 @@ func (x *Connector) StatusServices() []protocol.ServiceStatus {
 	out := []protocol.ServiceStatus{}
 	for _, name := range x.order {
 		s := x.services[name]
-		flight := s.flight
-		if s.storage != nil {
-			flight = s.storage.InFlight()
-		}
-		out = append(out, protocol.ServiceStatus{Name: name, Healthy: x.healthy(s), Models: append([]string{}, s.cfg.Models.Names...), InFlight: flight})
+		models, _ := advertised(s)
+		out = append(out, protocol.ServiceStatus{Name: name, Healthy: x.healthy(s), Models: models, InFlight: inFlight(s), Parts: x.parts(s)})
 	}
 	return out
 }
@@ -481,6 +559,21 @@ func (x *Connector) ServeStream(parent context.Context, raw net.Conn) {
 	} else if req.Method != "GET" && req.Method != "POST" && req.Method != "PUT" && req.Method != "DELETE" {
 		fail("path_not_allowed")
 		return
+	}
+	if s.ports != nil {
+		p, code := x.route(s, req, method, h.Kind)
+		switch code {
+		case "":
+			s = p
+			c.idle = s.cfg.IdleTimeout
+			c.touch()
+		case listModels:
+			entry.Status = writeModelList(c, s, method, req.URL.Path)
+			return
+		default:
+			fail(code)
+			return
+		}
 	}
 	if !s.cfg.Allows(method, req.URL.Path) {
 		fail("path_not_allowed")
@@ -833,4 +926,83 @@ func (x *Connector) startStorage(ctx context.Context, s *service) {
 		case <-timer.C:
 		}
 	}
+}
+
+// listModels is route's answer for GET /v1/models on a machine whose ports
+// share it: the connector lists their models itself.
+const listModels = "list_models"
+
+// route picks the port of machine m that serves a request: the only port
+// that allows it, else the port listing the model its JSON body names. That
+// body is read here, within the request limit, and replayed to the port.
+// Configuration checks make the choice unique (config.checkMachine).
+func (x *Connector) route(m *service, req *http.Request, method, kind string) (*service, string) {
+	var allow []*service
+	for _, p := range m.ports {
+		if p.cfg.Allows(method, req.URL.Path) {
+			allow = append(allow, p)
+		}
+	}
+	switch {
+	case len(allow) == 0:
+		return nil, "path_not_allowed"
+	case len(allow) == 1:
+		return allow[0], ""
+	case kind == "http" && req.Method == http.MethodGet && req.URL.Path == "/v1/models":
+		return nil, listModels
+	}
+	ct, _, _ := mime.ParseMediaType(req.Header.Get("Content-Type"))
+	if kind != "http" || (req.Method != http.MethodPost && req.Method != http.MethodPut) || ct != "application/json" {
+		return nil, "model_required"
+	}
+	if req.ContentLength > m.maxRequest {
+		return nil, "request_too_large"
+	}
+	data, err := io.ReadAll(io.LimitReader(req.Body, m.maxRequest+1))
+	switch {
+	case err != nil:
+		return nil, "invalid_request"
+	case int64(len(data)) > m.maxRequest:
+		return nil, "request_too_large"
+	}
+	var body struct {
+		Model *string `json:"model"`
+	}
+	if json.Unmarshal(data, &body) != nil {
+		return nil, "invalid_request"
+	}
+	if body.Model == nil {
+		return nil, "model_required"
+	}
+	req.Body, req.ContentLength = io.NopCloser(bytes.NewReader(data)), int64(len(data))
+	for _, p := range allow {
+		if p.allow != nil && p.allow.Allows(*body.Model) {
+			return p, ""
+		}
+	}
+	return nil, "model_not_allowed"
+}
+
+// writeModelList answers GET /v1/models on a machine with the models of
+// the ports that allow it.
+func writeModelList(w io.Writer, m *service, method, path string) int {
+	type entry struct {
+		ID      string `json:"id"`
+		Object  string `json:"object"`
+		OwnedBy string `json:"owned_by"`
+	}
+	data := []entry{}
+	for _, p := range m.ports {
+		if p.cfg.Allows(method, path) {
+			for _, n := range p.cfg.Models.Names {
+				data = append(data, entry{n, "model", m.cfg.Name})
+			}
+		}
+	}
+	body, _ := json.Marshal(map[string]any{"object": "list", "data": data})
+	resp := &http.Response{StatusCode: http.StatusOK, ProtoMajor: 1, ProtoMinor: 1,
+		Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(bytes.NewReader(body)),
+		ContentLength: int64(len(body)), Close: true}
+	_ = resp.Write(w)
+	return http.StatusOK
 }

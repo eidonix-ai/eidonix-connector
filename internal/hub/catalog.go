@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/eidonix-ai/eidonix-connector/protocol"
@@ -34,13 +35,17 @@ type CatalogSession struct {
 }
 
 // CatalogService is one service, merged across the site's sessions:
-// healthy when any non-draining session reports it healthy;
+// healthy when any non-draining session reports it healthy; health ok,
+// degraded (a machine with some ports down) or down, from healthy and its
+// parts (a part is healthy when any non-draining session reports it so);
 // max_concurrent_requests the largest of the non-draining sessions' (each
 // session enforces its own); in_flight summed over all.
 type CatalogService struct {
 	Name                  string                   `json:"name"`
 	Kind                  string                   `json:"kind"`
 	Healthy               bool                     `json:"healthy"`
+	Health                string                   `json:"health"`
+	Parts                 []protocol.ServicePart   `json:"parts,omitempty"`
 	Endpoints             []string                 `json:"endpoints,omitempty"`
 	Models                []string                 `json:"models,omitempty"`
 	MaxConcurrentRequests int                      `json:"max_concurrent_requests"`
@@ -81,6 +86,7 @@ func (h *Hub) catalogSite(site *Site) CatalogSite {
 				continue
 			}
 			svc.Healthy = svc.Healthy || rt.healthy
+			svc.Parts = mergeParts(svc.Parts, rt.parts)
 			svc.MaxConcurrentRequests = max(svc.MaxConcurrentRequests, rt.maxConcurrent)
 			for _, m := range rt.models {
 				if !contains(svc.Models, m) {
@@ -91,6 +97,7 @@ func (h *Hub) catalogSite(site *Site) CatalogSite {
 		s.mu.Unlock()
 	}
 	for _, svc := range byName {
+		svc.Health = protocol.Health(svc.Healthy, svc.Parts)
 		cs.Services = append(cs.Services, *svc)
 	}
 	sort.Slice(cs.Services, func(i, j int) bool { return cs.Services[i].Name < cs.Services[j].Name })
@@ -127,4 +134,26 @@ func (h *Hub) serveCatalog(w http.ResponseWriter, r *http.Request, site string) 
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
 	_, _ = w.Write(append(b, '\n'))
+}
+
+// mergeParts adds one session's parts to a service's: a part (the same
+// models and endpoints) is healthy when any session reports it healthy.
+func mergeParts(have, add []protocol.ServicePart) []protocol.ServicePart {
+	key := func(p protocol.ServicePart) string {
+		return strings.Join(p.Models, "\x00") + "\x01" + strings.Join(p.Endpoints, "\x00")
+	}
+	for _, p := range add {
+		found := false
+		for i := range have {
+			if key(have[i]) == key(p) {
+				have[i].Healthy = have[i].Healthy || p.Healthy
+				found = true
+				break
+			}
+		}
+		if !found {
+			have = append(have, protocol.ServicePart{Models: append([]string{}, p.Models...), Endpoints: append([]string(nil), p.Endpoints...), Healthy: p.Healthy})
+		}
+	}
+	return have
 }

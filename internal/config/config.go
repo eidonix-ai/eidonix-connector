@@ -63,7 +63,9 @@ type Upstream struct {
 }
 
 // Service is one shared service. An http service has Endpoints (and
-// optionally Models, Health, APIKey); an s3 service has Storage.
+// optionally Models, Health, APIKey); an s3 service has Storage. A machine
+// has Ports instead: one http service per port of its host, each named
+// "<machine>:<port>", which requests to the machine are routed to.
 type Service struct {
 	Name string
 	Kind string
@@ -80,7 +82,13 @@ type Service struct {
 	MaxRequestsPerMinute  int
 	IdleTimeout           time.Duration
 	Storage               *Storage
+	// Ports are a machine's services, in file order (Address is then the
+	// machine's host, as written, and URL is empty).
+	Ports []Service
 }
+
+// Machine reports whether the service is a machine (a host with ports).
+func (s Service) Machine() bool { return len(s.Ports) > 0 }
 
 // Models is a service's model list. Names are the names applications use, in file
 // order; Target maps each to the model's name on the server. Without names
@@ -208,6 +216,11 @@ func (c *Config) Secrets() []string {
 		out = append(out, "token")
 	}
 	for _, s := range c.Services {
+		for _, p := range s.Ports {
+			if p.APIKey != "" {
+				out = append(out, "api-key ("+p.Name+")")
+			}
+		}
 		if s.APIKey != "" {
 			out = append(out, "api-key ("+s.Name+")")
 		}

@@ -48,6 +48,9 @@ func New(names []string, target map[string]string) *Policy {
 	return p
 }
 
+// Allows reports whether name is one of the allowed names.
+func (p *Policy) Allows(name string) bool { _, ok := p.target[name]; return ok }
+
 // Names returns the allowed names in configured order.
 func (p *Policy) Names() []string { return append([]string(nil), p.names...) }
 

@@ -21,6 +21,7 @@ import (
 
 const (
 	MaxServices       = 256
+	MaxPorts          = 64
 	MaxEndpoints      = 64
 	MaxModels         = 64
 	MaxModelNameBytes = 200
@@ -30,7 +31,11 @@ var (
 	topFields      = []string{"site", "upstream", "access-log", "status-file", "services"}
 	upstreamFields = []string{"url", "token", "public-keys", "proxy", "ca-certificate"}
 	httpFields     = []string{"kind", "address", "allowed-endpoints", "models", "health", "api-key", "max-concurrent-requests", "max-requests-per-minute", "idle-timeout"}
-	s3Fields       = []string{"kind", "address", "bucket", "access-key", "secret-key", "region", "encryption", "encryption-key", "ca-certificate", "read-only", "max-file-size", "max-concurrent-requests"}
+	machineFields  = []string{"address", "ports"}
+	// portFields are a machine port's settings: an http service's, but its
+	// address is the machine's host and its port number.
+	portFields = []string{"allowed-endpoints", "models", "health", "api-key", "max-concurrent-requests", "max-requests-per-minute", "idle-timeout"}
+	s3Fields   = []string{"kind", "address", "bucket", "access-key", "secret-key", "region", "encryption", "encryption-key", "ca-certificate", "read-only", "max-file-size", "max-concurrent-requests"}
 	// v02Keys are top-level keys only a v0.2 file has.
 	v02Keys = []string{"name", "access_log", "chat", "anthropic", "embeddings", "rerank", "transcription", "speech", "image", "document", "conversion", "realtime", "storage", "custom"}
 )
@@ -409,6 +414,11 @@ func parseService(k, n *yaml.Node) (Service, error) {
 		return s, at(k, ctx, "needs settings (address, allowed-endpoints, …)")
 	}
 	for i := 0; i+1 < len(n.Content); i += 2 {
+		if n.Content[i].Value == "ports" {
+			return parseMachine(k, n)
+		}
+	}
+	for i := 0; i+1 < len(n.Content); i += 2 {
 		if n.Content[i].Value == "kind" {
 			v, err := line(n.Content[i+1], ctx, "kind")
 			if err != nil {
@@ -447,70 +457,78 @@ func parseService(k, n *yaml.Node) (Service, error) {
 	if s.Address, s.URL, err = parseAddress(f["address"], ctx); err != nil {
 		return s, err
 	}
-	if v := f["max-concurrent-requests"]; v != nil {
-		limit := 10000
-		if s.Kind == KindS3 {
-			limit = 256
-		}
-		if s.MaxConcurrentRequests, err = integer(v, ctx, "max-concurrent-requests", 1, limit); err != nil {
-			return s, err
-		}
-	}
 	if s.Kind == KindS3 {
+		if v := f["max-concurrent-requests"]; v != nil {
+			if s.MaxConcurrentRequests, err = integer(v, ctx, "max-concurrent-requests", 1, 256); err != nil {
+				return s, err
+			}
+		}
 		return s, parseStorage(&s, f, k, ctx)
+	}
+	return s, parseHTTP(&s, f, k, ctx)
+}
+
+// parseHTTP reads an http service's settings other than its address (an
+// ordinary service's, or a machine port's).
+func parseHTTP(s *Service, f map[string]*yaml.Node, k *yaml.Node, ctx string) error {
+	var err error
+	if v := f["max-concurrent-requests"]; v != nil {
+		if s.MaxConcurrentRequests, err = integer(v, ctx, "max-concurrent-requests", 1, 10000); err != nil {
+			return err
+		}
 	}
 	list := f["allowed-endpoints"]
 	if list == nil {
-		return s, at(k, ctx, "allowed-endpoints is required: list the requests allowed, e.g. [POST /v1/*, GET /v1/models]")
+		return at(k, ctx, "allowed-endpoints is required: list the requests allowed, e.g. [POST /v1/*, GET /v1/models]")
 	}
 	if list.Kind != yaml.SequenceNode || len(list.Content) == 0 || len(list.Content) > MaxEndpoints {
-		return s, at(list, ctx, "allowed-endpoints must list 1 to %d requests, e.g. [POST /v1/*, GET /v1/models]", MaxEndpoints)
+		return at(list, ctx, "allowed-endpoints must list 1 to %d requests, e.g. [POST /v1/*, GET /v1/models]", MaxEndpoints)
 	}
 	seen := map[Endpoint]bool{}
 	for _, item := range list.Content {
 		entry, err := line(item, ctx, "allowed-endpoints entry")
 		if err != nil {
-			return s, err
+			return err
 		}
 		e, perr := ParseEndpoint(entry)
 		if perr != nil {
-			return s, at(item, ctx, "allowed-endpoints entry %v", perr)
+			return at(item, ctx, "allowed-endpoints entry %v", perr)
 		}
 		if seen[e] {
-			return s, at(item, ctx, "allowed-endpoints lists %s twice", e)
+			return at(item, ctx, "allowed-endpoints lists %s twice", e)
 		}
 		seen[e] = true
 		s.Endpoints = append(s.Endpoints, e)
 	}
 	if v := f["models"]; v != nil {
 		if s.Models, err = parseModels(v, ctx); err != nil {
-			return s, err
+			return err
 		}
 	}
 	if v := f["health"]; v != nil {
 		if s.Health, err = line(v, ctx, "health"); err != nil {
-			return s, err
+			return err
 		}
 		if ValidatePath(s.Health) != nil {
-			return s, at(v, ctx, "health must be a path such as /health")
+			return at(v, ctx, "health must be a path such as /health")
 		}
 	}
 	if v := f["max-requests-per-minute"]; v != nil {
 		if s.MaxRequestsPerMinute, err = integer(v, ctx, "max-requests-per-minute", 1, 1000000); err != nil {
-			return s, err
+			return err
 		}
 	}
 	if v := f["idle-timeout"]; v != nil {
 		if s.IdleTimeout, err = duration(v, ctx, "idle-timeout"); err != nil {
-			return s, err
+			return err
 		}
 	}
 	if v := f["api-key"]; v != nil {
 		if s.APIKey, err = line(v, ctx, "api-key"); err != nil {
-			return s, err
+			return err
 		}
 	}
-	return s, nil
+	return nil
 }
 
 func modelName(n *yaml.Node, ctx string) (string, error) {
@@ -604,4 +622,129 @@ func HostPort(raw string) string {
 		}
 	}
 	return net.JoinHostPort(u.Hostname(), port)
+}
+
+// parseMachine reads a machine: its host and one http service per port
+// (docs/CONFIG.md, "Machines"). Ports that allow a request in common must
+// all list their models, and a model is on only one port, so every request
+// to the machine names one port: the only one allowing it, or the one with
+// its model.
+func parseMachine(k, n *yaml.Node) (Service, error) {
+	s := Service{Name: k.Value, Kind: KindHTTP, Line: k.Line}
+	ctx := fmt.Sprintf("machine %q", s.Name)
+	for i := 0; i+1 < len(n.Content); i += 2 {
+		key := n.Content[i]
+		for _, f := range portFields {
+			if key.Value == f {
+				return s, at(key, ctx, "%s is a setting of each port; put it under the port it applies to", key.Value)
+			}
+		}
+	}
+	f, err := mapping(n, ctx, machineFields)
+	if err != nil {
+		return s, err
+	}
+	if f["address"] == nil {
+		return s, at(k, ctx, "address is required: the machine's host, e.g. 10.0.0.5 (its ports are listed under ports)")
+	}
+	scheme, host, err := parseHost(f["address"], ctx)
+	if err != nil {
+		return s, err
+	}
+	s.Address, _ = line(f["address"], ctx, "address")
+	ports := f["ports"]
+	if ports.Kind != yaml.MappingNode || len(ports.Content) == 0 || len(ports.Content)/2 > MaxPorts {
+		return s, at(ports, ctx, "ports must list 1 to %d ports by number (8000: then its settings)", MaxPorts)
+	}
+	lines := map[string]int{}
+	for i := 0; i+1 < len(ports.Content); i += 2 {
+		pk, pv := ports.Content[i], ports.Content[i+1]
+		if pk.Kind != yaml.ScalarNode || pk.Value == "" || !validPort(pk.Value) {
+			return s, at(pk, ctx, "port %q must be a number from 1 to 65535", pk.Value)
+		}
+		pctx := fmt.Sprintf("machine %q port %s", s.Name, pk.Value)
+		if prior, dup := lines[pk.Value]; dup {
+			return s, at(pk, pctx, "port already listed on line %d", prior)
+		}
+		lines[pk.Value] = pk.Line
+		if pv.Kind != yaml.MappingNode {
+			return s, at(pk, pctx, "needs settings (allowed-endpoints, …)")
+		}
+		pf, err := mapping(pv, pctx, portFields)
+		if err != nil {
+			return s, err
+		}
+		p := Service{Name: s.Name + ":" + pk.Value, Kind: KindHTTP, Line: pk.Line,
+			MaxConcurrentRequests: DefaultMaxConcurrentRequests, IdleTimeout: DefaultIdleTimeout}
+		p.Address = net.JoinHostPort(host, pk.Value)
+		p.URL = scheme + "://" + p.Address
+		if err := parseHTTP(&p, pf, pk, pctx); err != nil {
+			return s, err
+		}
+		s.Ports = append(s.Ports, p)
+		// The machine's own limits are its ports' together: what a
+		// gateway may send it at once, and how long a request may idle
+		// before it is routed to a port.
+		s.MaxConcurrentRequests += p.MaxConcurrentRequests
+		s.IdleTimeout = max(s.IdleTimeout, p.IdleTimeout)
+	}
+	return s, checkMachine(s)
+}
+
+// parseHost reads a machine's address: its host, or https://host for TLS,
+// without a port. It returns the scheme and the host.
+func parseHost(n *yaml.Node, ctx string) (string, string, error) {
+	v, err := line(n, ctx, "address")
+	if err != nil {
+		return "", "", err
+	}
+	scheme := "http"
+	if rest, ok := strings.CutPrefix(v, "https://"); ok {
+		scheme, v = "https", strings.TrimSuffix(rest, "/")
+	} else if strings.Contains(v, "://") {
+		return "", "", at(n, ctx, "address must be the machine's host or https://host; write %q without http://", strings.TrimPrefix(v, "http://"))
+	}
+	if inner, ok := strings.CutPrefix(v, "["); ok && strings.HasSuffix(inner, "]") {
+		if ip := net.ParseIP(strings.TrimSuffix(inner, "]")); ip != nil && ip.To4() == nil {
+			return scheme, ip.String(), nil
+		}
+	}
+	if v == "" || strings.ContainsAny(v, ":%/@?#[] ") {
+		return "", "", at(n, ctx, "a machine's address is its host (e.g. 10.0.0.5) or https://host, without a port or path: the ports are listed under ports")
+	}
+	return scheme, v, nil
+}
+
+// checkMachine makes every request to a machine name one port: a model is
+// on one port only, and ports that allow a request in common list their
+// models (the request is then routed by the model it names).
+func checkMachine(s Service) error {
+	ctx := fmt.Sprintf("machine %q", s.Name)
+	owner := map[string]Service{}
+	for _, p := range s.Ports {
+		for _, m := range p.Models.Names {
+			if o, dup := owner[m]; dup {
+				return &lineError{p.Line, fmt.Sprintf("%s: model %q is on port %s and port %s; a model may be on only one port of a machine", ctx, m, port(o), port(p))}
+			}
+			owner[m] = p
+		}
+	}
+	for i, a := range s.Ports {
+		for _, b := range s.Ports[i+1:] {
+			for _, ea := range a.Endpoints {
+				for _, eb := range b.Endpoints {
+					if ea.Overlaps(eb) && (!a.Models.Set() || !b.Models.Set()) {
+						return &lineError{b.Line, fmt.Sprintf("%s: port %s and port %s both allow %s; both must list their models, so each request goes to the port with the model it names", ctx, port(a), port(b), eb)}
+					}
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// port is a machine port's number, from its name.
+func port(p Service) string {
+	_, n, _ := strings.Cut(p.Name, ":")
+	return n
 }

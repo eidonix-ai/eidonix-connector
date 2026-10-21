@@ -137,6 +137,8 @@ Every service of every connected site is at
 flushed as it arrives, cancelled at the site when the request is closed),
 WebSocket, and for `kind: s3` services a small storage API. The catalog is
 `GET /v1/catalog` (and `/v1/catalog/<site>`); `GET /healthz` answers `ok`.
+Each catalog service has `health`: `ok`, `degraded` (a machine with some
+ports down; its `parts` say which models and endpoints) or `down`.
 The full contract, with every status and error code, is
 [HUB-DESIGN.md §4](HUB-DESIGN.md#4-using-a-connected-service).
 

@@ -56,9 +56,12 @@ type Draining struct {
 // counts (an error is a request the connector refused or ended, a 5xx
 // answer, or a storage operation that did not end ok).
 type Service struct {
-	Name          string `json:"name"`
-	Kind          string `json:"kind"`
-	Healthy       bool   `json:"healthy"`
+	Name    string `json:"name"`
+	Kind    string `json:"kind"`
+	Healthy bool   `json:"healthy"`
+	// Health is ok, degraded (some of a machine's ports down) or down;
+	// files written before it have only Healthy.
+	Health        string `json:"health,omitempty"`
 	InFlight      int    `json:"in_flight"`
 	MaxConcurrent int    `json:"max_concurrent"`
 	Requests1h    int64  `json:"requests_1h"`
@@ -162,11 +165,16 @@ func Print(w io.Writer, f File, now time.Time) {
 		return
 	}
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "SERVICE\tKIND\tHEALTHY\tIN FLIGHT\tMAX\tREQUESTS (1H)\tERRORS (1H)")
+	fmt.Fprintln(tw, "SERVICE\tKIND\tHEALTH\tIN FLIGHT\tMAX\tREQUESTS (1H)\tERRORS (1H)")
 	for _, s := range f.Services {
-		healthy := "yes"
-		if !s.Healthy {
-			healthy = "NO"
+		healthy := s.Health
+		switch {
+		case healthy == "" && s.Healthy:
+			healthy = "ok"
+		case healthy == "" || healthy == "down":
+			healthy = "DOWN"
+		case healthy == "degraded":
+			healthy = "DEGRADED"
 		}
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%d\t%d\t%d\n", s.Name, s.Kind, healthy, s.InFlight, s.MaxConcurrent, s.Requests1h, s.Errors1h)
 	}

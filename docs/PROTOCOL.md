@@ -76,7 +76,9 @@ Encryption is `none`, `sse-s3` or `sse-c`, the owner's choice. A `read_only` ser
 
 A connector sends `draining` on its old session when it replaces it (reload, stop, upgrade): it first opens a new session, and once that has `auth_ok` and `hello_ack` the old one sends `draining`, keeps answering `ping` and sending `status`, finishes its streams and closes (a normal close, bounded by the connector). Both sessions carry the same `instance_id` (it is per process); gateways must not deduplicate or evict sessions by instance or site. A stream that still reaches a draining session is refused with `busy` (HTTP 429, or a storage `busy` result) without contacting the service, so the gateway may send it once more to another session. A gateway lists a draining session as such until it closes.
 
-A `status` service is `{"name","healthy","in_flight","models"}`. `models` is **always** present: an empty array means the list is now empty, and the gateway must clear its copy. `protocol/testdata/control.jsonl` holds golden lines for every message type.
+A service that runs on several servers (a machine's ports, [CONFIG.md](CONFIG.md#machines)) adds `parts`, one per server, without addresses: `[{"models":["model-a"],"endpoints":["POST /v1/*"],"healthy":true}, …]`. Its `healthy` is then true while any part is healthy, and a gateway shows it ok when every part is healthy, degraded when some are, down when none is (`protocol.Health`). Peers that predate `parts` ignore it.
+
+A `status` service is `{"name","healthy","in_flight","models"}`, plus `parts` for such a service. `models` is **always** present: an empty array means the list is now empty, and the gateway must clear its copy. `protocol/testdata/control.jsonl` holds golden lines for every message type.
 
 ## Request headers and inference
 

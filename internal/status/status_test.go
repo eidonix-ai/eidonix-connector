@@ -20,6 +20,9 @@ func sample(now time.Time) File {
 		Services: []Service{
 			{Name: "chat", Kind: "http", Healthy: true, InFlight: 3, MaxConcurrent: 32, Requests1h: 120, Errors1h: 4},
 			{Name: "files", Kind: "s3", Healthy: false, MaxConcurrent: 16},
+			// A machine with a port down; chat and files are from files
+			// written before Health existed.
+			{Name: "gpu", Kind: "http", Healthy: true, Health: "degraded", MaxConcurrent: 24, Requests1h: 9, Errors1h: 1},
 		},
 	}
 }
@@ -76,7 +79,7 @@ func TestPrint(t *testing.T) {
 			rows[fields[0]] = strings.Join(fields, " ")
 		}
 	}
-	if rows["chat"] != "chat http yes 3 32 120 4" || rows["files"] != "files s3 NO 0 16 0 0" {
+	if rows["chat"] != "chat http ok 3 32 120 4" || rows["files"] != "files s3 DOWN 0 16 0 0" || rows["gpu"] != "gpu http DEGRADED 0 24 9 1" {
 		t.Fatalf("rows %v", rows)
 	}
 	if strings.Contains(out.String(), "Not running") {

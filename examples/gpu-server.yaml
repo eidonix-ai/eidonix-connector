@@ -25,47 +25,42 @@ services:
     models: [meta-llama/Llama-3.3-70B-Instruct]
     health: /health
     idle-timeout: 15m
-  chat-small:                         # small chat model on the utility server
-    address: 10.0.0.30:8004
-    allowed-endpoints: [POST /v1/*, GET /v1/models]
-    models: [qwen-small]
-    health: /health
-    max-concurrent-requests: 8
-  ocr:                                # layout parsing (PDF/scan → text)
-    address: 10.0.0.30:8002
-    allowed-endpoints: [POST /layout-parsing]
-    health: /health
-  embed:
-    address: 10.0.0.30:8001
-    allowed-endpoints: [POST /embeddings]   # this server's API is at / rather than /v1
-    models:
-      nomic-ai/nomic-embed-text-v1.5: {alias: nomic-embed}   # <name your server uses>: {alias: <name Eidonix uses>}
-    health: /health
-  rerank-jina:
-    address: 10.0.0.30:8006
-    allowed-endpoints: [POST /v1/rerank]
-    models:
-      jina-reranker-v3: {alias: jina-reranker}
-    health: /health
-  stt:
-    address: 10.0.0.30:8007
-    allowed-endpoints: [POST /v1/audio/transcriptions]
-    models:
-      /models/faster-whisper-large-v3-turbo: {alias: whisper}
-    health: /health
-  tts:
-    address: 10.0.0.30:8009
-    allowed-endpoints: [POST /v1/audio/speech, GET /v1/audio/voices]
-    models: [kokoro]
-    health: /health
-  image:
-    address: 10.0.0.30:8010
-    allowed-endpoints: [POST /v1/images/*]
-    models: [qwen-image]
-    health: /health
-    max-concurrent-requests: 1        # one image at a time on this card
-  voice-live:                         # live transcription over a WebSocket
-    address: 10.0.0.30:8011
-    allowed-endpoints: [WEBSOCKET /v1/stream, GET /v1/config]
-    health: /health
-    max-concurrent-requests: 4
+  utility:                            # the utility server: one machine, a server per port
+    address: 10.0.0.30                # the host; its ports below (callers name "utility")
+    ports:
+      8004:                           # small chat model
+        allowed-endpoints: [POST /v1/*, GET /v1/models]
+        models: [qwen-small]
+        health: /health
+        max-concurrent-requests: 8
+      8002:                           # layout parsing (PDF/scan → text)
+        allowed-endpoints: [POST /layout-parsing]
+        health: /health
+      8001:
+        allowed-endpoints: [POST /embeddings]   # this server's API is at / rather than /v1
+        models:
+          nomic-ai/nomic-embed-text-v1.5: {alias: nomic-embed}   # <name your server uses>: {alias: <name Eidonix uses>}
+        health: /health
+      8006:
+        allowed-endpoints: [POST /v1/rerank]
+        models:
+          jina-reranker-v3: {alias: jina-reranker}
+        health: /health
+      8007:
+        allowed-endpoints: [POST /v1/audio/transcriptions]
+        models:
+          /models/faster-whisper-large-v3-turbo: {alias: whisper}
+        health: /health
+      8009:
+        allowed-endpoints: [POST /v1/audio/speech, GET /v1/audio/voices]
+        models: [kokoro]
+        health: /health
+      8010:
+        allowed-endpoints: [POST /v1/images/*]
+        models: [qwen-image]
+        health: /health
+        max-concurrent-requests: 1    # one image at a time on this card
+      8011:                           # live transcription over a WebSocket
+        allowed-endpoints: [WEBSOCKET /v1/stream, GET /v1/config]
+        health: /health
+        max-concurrent-requests: 4

@@ -438,7 +438,7 @@ func TestStatusFileAndCommand(t *testing.T) {
 			row = strings.Join(strings.Fields(line), " ")
 		}
 	}
-	if row != "chat http yes 1 16 1 0" {
+	if row != "chat http ok 1 16 1 0" {
 		t.Fatalf("service row %q in\n%s", row, out.String())
 	}
 	out.Reset()

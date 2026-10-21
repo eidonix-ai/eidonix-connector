@@ -53,9 +53,12 @@ type route struct {
 	slots         chan struct{}
 	inFlight      atomic.Int64
 
-	// healthy and models change with status messages (session.mu).
+	// healthy, models and parts change with status messages (session.mu).
 	healthy bool
 	models  []string
+	// parts are a machine's ports: what each serves and whether it is
+	// healthy (protocol.ServicePart); nil for other services.
+	parts []protocol.ServicePart
 }
 
 func (s *session) has(c string) bool {
@@ -229,7 +232,7 @@ func (h *Hub) ServeSession(w http.ResponseWriter, r *http.Request) {
 		}
 		limit := min(max(svc.MaxConcurrentRequests, 1), maxStreamsPerSession)
 		rt := &route{name: svc.Name, kind: svc.Kind, endpoints: clipEndpoints(svc.Endpoints), maxConcurrent: limit,
-			slots: make(chan struct{}, limit), healthy: svc.Healthy, models: clipModels(svc.Models)}
+			slots: make(chan struct{}, limit), healthy: svc.Healthy, models: clipModels(svc.Models), parts: clipParts(svc.Parts)}
 		if st := svc.Storage; st != nil && svc.Kind == protocol.KindS3 {
 			rt.storage = &protocol.StorageService{MaxKeyBytes: st.MaxKeyBytes, MaxObjectBytes: st.MaxObjectBytes, Encryption: printableClip(st.Encryption, 16), ReadOnly: st.ReadOnly}
 		}
@@ -353,6 +356,7 @@ func (s *session) applyStatus(raw json.RawMessage) error {
 		if rt := s.routes[st.Name]; rt != nil {
 			rt.healthy = st.Healthy
 			rt.models = clipModels(st.Models)
+			rt.parts = clipParts(st.Parts)
 		}
 	}
 	return nil
@@ -463,6 +467,22 @@ func clipModels(m []string) []string {
 	out := make([]string, 0, len(m))
 	for _, id := range m {
 		out = append(out, printableClip(id, maxModelBytes))
+	}
+	return out
+}
+
+// maxParts bounds a service's parts (a connector's machine has at most 64
+// ports).
+const maxParts = 64
+
+// clipParts bounds what a connector reports of a machine's ports.
+func clipParts(in []protocol.ServicePart) []protocol.ServicePart {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]protocol.ServicePart, 0, min(len(in), maxParts))
+	for _, p := range in[:min(len(in), maxParts)] {
+		out = append(out, protocol.ServicePart{Models: clipModels(p.Models), Endpoints: clipEndpoints(p.Endpoints), Healthy: p.Healthy})
 	}
 	return out
 }

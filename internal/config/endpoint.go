@@ -29,6 +29,24 @@ func (e Endpoint) Matches(method, path string) bool {
 	return path == e.Path
 }
 
+// Overlaps reports whether some request is allowed by both e and o.
+func (e Endpoint) Overlaps(o Endpoint) bool {
+	if e.Method != o.Method {
+		return false
+	}
+	eb, ew := strings.CutSuffix(e.Path, "*")
+	ob, ow := strings.CutSuffix(o.Path, "*")
+	switch {
+	case !ew && !ow:
+		return e.Path == o.Path
+	case ew && !ow:
+		return e.Matches(o.Method, o.Path)
+	case !ew && ow:
+		return o.Matches(e.Method, e.Path)
+	}
+	return strings.HasPrefix(eb, ob) || strings.HasPrefix(ob, eb)
+}
+
 // ParseEndpoint parses an entry such as "POST /v1/*" or "WEBSOCKET /v1/stream".
 func ParseEndpoint(s string) (Endpoint, error) {
 	method, path, ok := strings.Cut(strings.TrimSpace(s), " ")

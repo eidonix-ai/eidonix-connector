@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.5.0 (2026-10-21)
+
+### Connector
+
+**Machines.** One service name for a host that runs several servers, each on
+its own port: `address` is the host and `ports` lists each server's settings
+by port number ([docs/CONFIG.md](docs/CONFIG.md#machines)). Callers name the
+machine; a request goes to the only port that allows it, or to the port that
+lists the model it names. `GET /v1/models` shared by several ports is
+answered with their models. A model may be on only one port, and ports that
+allow a request in common must list their models; `check` refuses a file
+that breaks either rule. Health and limits are per port: a port that is down
+refuses its own requests while the others keep working. Files without
+machines are unchanged.
+
+**Health has three states.** A machine announces its ports as `parts` (what
+each serves and whether it is healthy, no addresses); `status` and the hub
+show a service **ok**, **degraded** (some ports down) or **down**. `status`'s
+HEALTH column replaces HEALTHY.
+
+### Protocol
+
+Services and status services may carry `parts`; peers that predate it
+ignore it.
+
+### Hub
+
+The catalog gives each service `health` (`ok`, `degraded`, `down`) and a
+machine's `parts`, merged across the site's sessions.
+
 ## 0.4.0 (2026-10-19)
 
 ### Hub

@@ -82,6 +82,38 @@ type Service struct {
 	MaxConcurrentRequests int             `json:"max_concurrent_requests"`
 	Healthy               bool            `json:"healthy"`
 	Storage               *StorageService `json:"storage,omitempty"`
+	// Parts is set for a service that runs on several servers (a machine's
+	// ports); Healthy is then true while any part is. Peers that predate it
+	// ignore it.
+	Parts []ServicePart `json:"parts,omitempty"`
+}
+
+// ServicePart is one server of a service that runs on several: what it
+// serves and whether it is healthy, without its address.
+type ServicePart struct {
+	Models    []string `json:"models"`
+	Endpoints []string `json:"endpoints,omitempty"`
+	Healthy   bool     `json:"healthy"`
+}
+
+// Service health as a gateway shows it.
+const (
+	HealthOK       = "ok"       // healthy, every part
+	HealthDegraded = "degraded" // some parts down
+	HealthDown     = "down"     // not healthy, or every part down
+)
+
+// Health is a service's health from its Healthy flag and its parts.
+func Health(healthy bool, parts []ServicePart) string {
+	if !healthy {
+		return HealthDown
+	}
+	for _, p := range parts {
+		if !p.Healthy {
+			return HealthDegraded
+		}
+	}
+	return HealthOK
 }
 
 // ServiceStatus is one service in a status message. Models is always encoded;
@@ -91,6 +123,8 @@ type ServiceStatus struct {
 	Healthy  bool     `json:"healthy"`
 	InFlight int      `json:"in_flight"`
 	Models   []string `json:"models"`
+	// Parts: as in Service.
+	Parts []ServicePart `json:"parts,omitempty"`
 }
 
 // Rejected names a service the gateway declined and why.
