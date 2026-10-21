@@ -16,7 +16,7 @@ services:
     build:
       context: ../..
       dockerfile: deploy/connect/Dockerfile
-    image: eidonix-connect:0.4.0
+    image: eidonix-connect:0.5.0
     restart: unless-stopped
     read_only: true
     cap_drop: [ALL]
