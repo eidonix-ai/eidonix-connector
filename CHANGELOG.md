@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.1 (2026-10-21)
+
+### Connector
+
+**`X-Affinity-Key` is forwarded.** Applications may send an opaque
+conversation hash so a load balancer in front of several replicas keeps a
+conversation on the replica that holds its prefix cache (haproxy:
+`balance hdr(X-Affinity-Key)` with `hash-type consistent`). It carries no
+credential; the connector passes it through unchanged.
+
 ## 0.5.0 (2026-10-21)
 
 ### Connector

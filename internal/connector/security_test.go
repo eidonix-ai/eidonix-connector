@@ -44,8 +44,8 @@ func TestDeniedRequestsBeforeDial(t *testing.T) {
 	}
 }
 func TestHeaderSanitizing(t *testing.T) {
-	h := cleanHeaders(http.Header{"Authorization": {"secret"}, "Cookie": {"cookie"}, "Host": {"evil"}, "X-Forwarded-For": {"fake"}, "Content-Type": {"application/json"}, "Fileurl": {"http://evil"}, "Anthropic-Version": {"2023-06-01"}, "Anthropic-Beta": {"x"}, "Openai-Organization": {"o"}, "Proxy-Authorization": {"p"}})
-	if len(h) != 3 || h.Get("Content-Type") != "application/json" || h.Get("Anthropic-Version") != "2023-06-01" || h.Get("Anthropic-Beta") != "x" {
+	h := cleanHeaders(http.Header{"Authorization": {"secret"}, "Cookie": {"cookie"}, "Host": {"evil"}, "X-Forwarded-For": {"fake"}, "Content-Type": {"application/json"}, "Fileurl": {"http://evil"}, "Anthropic-Version": {"2023-06-01"}, "Anthropic-Beta": {"x"}, "X-Affinity-Key": {"9f2c"}, "Openai-Organization": {"o"}, "Proxy-Authorization": {"p"}})
+	if len(h) != 4 || h.Get("Content-Type") != "application/json" || h.Get("Anthropic-Version") != "2023-06-01" || h.Get("Anthropic-Beta") != "x" || h.Get("X-Affinity-Key") != "9f2c" {
 		t.Fatalf("unsafe forwarded headers %v", h)
 	}
 }

@@ -109,8 +109,10 @@ it is not part of the match and is not forwarded. A request outside
 The request goes to the server at the same path; the connector never rewrites
 paths. Requests are limited to 100 MiB, responses to 256 MiB and WebSocket
 messages to 4 MiB. Request headers forwarded are `Content-Type`, `Accept`,
-`X-Request-Id`, `Anthropic-Version` and `Anthropic-Beta` (the last two select
-the Anthropic Messages API version and features; they carry no credentials);
+`X-Request-Id`, `Anthropic-Version`, `Anthropic-Beta` (these two select
+the Anthropic Messages API version and features; they carry no credentials)
+and `X-Affinity-Key` (an opaque conversation hash a load balancer in front of
+several replicas may route on, e.g. haproxy `balance hdr(X-Affinity-Key)`);
 response headers returned are `Content-Type`, `Cache-Control`, `Retry-After`
 and `X-Request-Id`. Redirects are never followed.
 

@@ -432,7 +432,10 @@ func (x *Connector) ReopenLogs() error {
 // forwarded are the only request headers sent upstream. Anthropic-Version and
 // Anthropic-Beta select the Anthropic Messages API version and features; they
 // carry no credential or routing, and other servers ignore them.
-var forwarded = []string{"Content-Type", "Accept", "X-Request-Id", "Anthropic-Version", "Anthropic-Beta"}
+// X-Affinity-Key is an opaque conversation hash a load balancer in front of
+// several replicas may route on (haproxy: balance hdr(X-Affinity-Key)), so a
+// conversation keeps landing on the replica that holds its prefix cache.
+var forwarded = []string{"Content-Type", "Accept", "X-Request-Id", "Anthropic-Version", "Anthropic-Beta", "X-Affinity-Key"}
 
 func cleanHeaders(in http.Header) http.Header {
 	h := make(http.Header)
