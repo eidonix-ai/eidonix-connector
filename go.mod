@@ -1,6 +1,6 @@
 module github.com/eidonix-ai/eidonix-connector
 
-go 1.27.2
+go 1.27.3
 
 require (
 	github.com/gorilla/websocket v1.5.3

@@ -23,7 +23,7 @@ import (
 	"github.com/eidonix-ai/eidonix-connector/internal/storage"
 )
 
-var version = "0.5.1"
+var version = "0.5.2"
 
 const usage = `usage:
   eidonix-connector run [--config PATH] [--drain-timeout 10m]    connect and share the configured services

@@ -22,7 +22,7 @@ import (
 	"github.com/eidonix-ai/eidonix-connector/internal/hub"
 )
 
-var version = "0.5.1"
+var version = "0.5.2"
 
 const usage = `usage:
   eidonix-connect serve [--config PATH]        accept connector sessions and serve the local port

@@ -101,7 +101,7 @@ The container image and compose file are in [`deploy/connect`](deploy/connect).
 
 ## Building
 
-Go 1.27.2. `make` builds static Linux amd64 and arm64 binaries (connector
+Go 1.27.3. `make` builds static Linux amd64 and arm64 binaries (connector
 and hub) and the connector's
 `.deb`, `.rpm` and `.apk` packages into `dist/` (packaging needs
 [nfpm](https://nfpm.goreleaser.com/)); `make test` runs `go vet` and the
@@ -121,7 +121,9 @@ curl --cacert /tmp/connector-dev/tls.pem \
   https://127.0.0.1:8443/services/chat/v1/chat/completions
 ```
 
-Never reuse development credentials in production. No production server key
-or release signing key is part of this repository.
+Never reuse development credentials in production. Production server keys
+and the release signing keys are held by Eidonix and are never part of this
+repository; only the release public keys are, in [`keys/`](keys) (see
+[verifying a release](docs/INSTALL.md#verify-the-release)).
 
 Module `github.com/eidonix-ai/eidonix-connector`. License: Apache-2.0.

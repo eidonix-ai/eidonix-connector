@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
-VERSION=${VERSION:-0.4.0}
-GO_VERSION=go1.27.2
+VERSION=${VERSION:-0.5.2}
+GO_VERSION=go1.27.3
 [ "$(go version | awk '{print $3}')" = "$GO_VERSION" ] || { echo "build requires $GO_VERSION" >&2; exit 1; }
 mkdir -p dist
 for arch in amd64 arm64; do

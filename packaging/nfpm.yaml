@@ -18,6 +18,13 @@ overrides:
     depends: [ca-certificates, procps-ng, shadow-utils]
   apk:
     depends: [ca-certificates, openrc, logrotate]
+# Release builds sign the .apk with the key in APK_SIGNING_KEY; its public half
+# is keys/eidonix-connector.rsa.pub (install as /etc/apk/keys/eidonix-connector.rsa.pub).
+# Unset, the package is unsigned (CI test packages).
+apk:
+  signature:
+    key_file: ${APK_SIGNING_KEY}
+    key_name: eidonix-connector
 contents:
   - src: dist/eidonix-connector-linux-${ARCH}
     dst: /usr/bin/eidonix-connector

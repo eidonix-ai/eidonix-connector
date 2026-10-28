@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.5.2 (2026-10-28)
+
+**Built with Go 1.27.3.** Go 1.27.2's `crypto/x509` still trusted some
+compromised intermediate certificates (GO-2026-6809), reachable from the
+connector's TLS verification. `govulncheck` now reports nothing reachable.
+
+**Signed releases.** Each release publishes `SHA256SUMS` signed with
+minisign, `.apk` packages signed with an apk key (so Alpine installs no
+longer need `--allow-untrusted`), and a CycloneDX SBOM per binary. The public
+keys are in `keys/`; [INSTALL.md](docs/INSTALL.md#verify-the-release) shows
+how to verify.
+
+**Documentation.** IMPLEMENTATION.md and the README describe the production
+hub, revocation and signed releases as they are, instead of the pre-hub state.
+
 ## 0.5.1 (2026-10-21)
 
 ### Connector

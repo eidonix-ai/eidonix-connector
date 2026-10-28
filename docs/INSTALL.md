@@ -10,33 +10,51 @@ definition, a logrotate policy and the blank configuration
 `/etc/eidonix-connector/connector.yaml` (`0640 root:eidonix-connector`). The
 service is never enabled or started by installation.
 
-Verify release artefacts before installing: check the signed `SHA256SUMS`
-with a release key obtained through an independently trusted channel, then
-`sha256sum -c SHA256SUMS`. No release key or signed artefact is part of this
-repository.
+## Verify the release
+
+Releases from 0.5.2 are published on
+[GitHub Releases](https://github.com/eidonix-ai/eidonix-connector/releases)
+with `SHA256SUMS`, its [minisign](https://jedisct1.github.io/minisign/)
+signature `SHA256SUMS.minisig`, and a CycloneDX SBOM per binary
+(`*.cdx.json`). The release public keys are in [`keys/`](../keys):
+
+| Key | File | Signs |
+|---|---|---|
+| minisign `79C674B53BA01C42` | `keys/minisign.pub` | `SHA256SUMS` (every artefact) |
+| RSA, apk name `eidonix-connector.rsa.pub` | `keys/eidonix-connector.rsa.pub` | each `.apk` |
+
+Confirm the key id with Eidonix through a channel other than this
+repository before trusting it the first time. Then:
+
+```sh
+minisign -Vm SHA256SUMS -p minisign.pub
+sha256sum -c --ignore-missing SHA256SUMS
+```
 
 ## 1. Install
 
-Alpine (for example a small LXC container):
+Alpine (for example a small LXC container). Install the apk key once; apk
+then verifies every package itself:
 
 ```sh
-apk add --allow-untrusted ./eidonix-connector_0.4.0_amd64.apk   # after sha256sum -c
+cp eidonix-connector.rsa.pub /etc/apk/keys/
+apk add ./eidonix-connector_0.5.2_amd64.apk
 ```
-
-The `.apk` is not signed with an apk key; its integrity comes from the
-verified checksums, which is why `--allow-untrusted` is needed.
 
 Debian / Ubuntu:
 
 ```sh
-sudo apt install ./eidonix-connector_0.4.0_amd64.deb
+sudo apt install ./eidonix-connector_0.5.2_amd64.deb
 ```
 
 Fedora / RHEL / Rocky / Alma:
 
 ```sh
-sudo dnf install ./eidonix-connector_0.4.0_amd64.rpm
+sudo dnf install ./eidonix-connector_0.5.2_amd64.rpm
 ```
+
+The `.deb` and `.rpm` carry no package-manager signature; their integrity
+comes from the signed `SHA256SUMS` above.
 
 ## 2. Fill in the configuration
 
