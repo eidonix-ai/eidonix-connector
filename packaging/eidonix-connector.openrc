@@ -15,6 +15,8 @@ respawn_delay=5
 retry="TERM/660/KILL/5"
 respawn_max=0
 umask=0077
+# To set a memory limit for the Go runtime, put "export GOMEMLIMIT=..." in
+# /etc/conf.d/eidonix-connector (docs/INSTALL.md, "Memory").
 required_files="/etc/eidonix-connector/connector.yaml"
 output_logger="logger -t eidonix-connector -p daemon.info"
 error_logger="logger -t eidonix-connector -p daemon.err"

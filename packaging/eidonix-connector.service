@@ -15,6 +15,8 @@ ExecReload=/bin/kill -HUP $MAINPID
 # Leave systemd room beyond that before it sends SIGKILL.
 KillSignal=SIGTERM
 TimeoutStopSec=11min
+# To set a memory limit for the Go runtime, add Environment=GOMEMLIMIT=... in a
+# drop-in (systemctl edit eidonix-connector); see docs/INSTALL.md, "Memory".
 Restart=always
 RestartSec=5
 # /run/eidonix-connector/status.json, read by "eidonix-connector status".

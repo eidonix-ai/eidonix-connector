@@ -1,6 +1,6 @@
 # Implementation status
 
-Module `github.com/eidonix-ai/eidonix-connector`, Apache-2.0. Version 0.6.0.
+Module `github.com/eidonix-ai/eidonix-connector`, Apache-2.0. Version 0.6.1.
 
 ## Implemented
 

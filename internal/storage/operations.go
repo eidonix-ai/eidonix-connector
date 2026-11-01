@@ -106,7 +106,14 @@ func (h *Handler) get(ctx context.Context, key string, header protocol.StreamHea
 	return result, reader, n, nil
 }
 func (h *Handler) upload(ctx context.Context, key, contentType string, reader io.Reader, expected int64) (info minio.UploadInfo, err error) {
-	buf := make([]byte, int(h.part))
+	// A part buffer is the largest allocation a put makes. When the size is known
+	// and fits in one part, one byte more than it is enough to see a body that is
+	// too long, so a small put does not cost a whole part (16 MiB by default).
+	size := h.part
+	if expected >= 0 && expected < size {
+		size = expected + 1
+	}
+	buf := make([]byte, int(size))
 	var uploadID string
 	parts := []minio.CompletePart{}
 	var total int64
@@ -136,6 +143,9 @@ func (h *Handler) upload(ctx context.Context, key, contentType string, reader io
 		}
 		if e != nil && e != io.EOF {
 			return info, e
+		}
+		if expected >= 0 && total > expected {
+			return info, protocol.NewStorageError("size_mismatch")
 		}
 		final := e == io.EOF
 		if final {

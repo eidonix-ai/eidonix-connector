@@ -38,19 +38,19 @@ then verifies every package itself:
 
 ```sh
 cp eidonix-connector.rsa.pub /etc/apk/keys/
-apk add ./eidonix-connector_0.6.0_amd64.apk
+apk add ./eidonix-connector_0.6.1_amd64.apk
 ```
 
 Debian / Ubuntu:
 
 ```sh
-sudo apt install ./eidonix-connector_0.6.0_amd64.deb
+sudo apt install ./eidonix-connector_0.6.1_amd64.deb
 ```
 
 Fedora / RHEL / Rocky / Alma:
 
 ```sh
-sudo dnf install ./eidonix-connector_0.6.0_amd64.rpm
+sudo dnf install ./eidonix-connector_0.6.1_amd64.rpm
 ```
 
 The `.deb` and `.rpm` carry no package-manager signature; their integrity
@@ -111,6 +111,34 @@ The systemd unit adds an empty capability set, a read-only filesystem except
 `/var/log/eidonix-connector`, and a system-call filter. For SELinux enforcing
 hosts the unit runs as the default `unconfined_service_t`.
 
+## Memory
+
+The connector needs little: tens of megabytes idle, plus up to one upload part
+(16 MiB by default) for each file being uploaded and a few hundred kilobytes
+for each stream running. Many concurrent requests (for example 64 inference
+streams and 16 uploads) add up to a few hundred megabytes at the most. In a
+container or LXC with a memory limit, tell the Go runtime the limit so it
+collects garbage before reaching it. Set `GOMEMLIMIT` to about 75% of the
+container's memory limit (for 2 GiB, `1536MiB`). Nothing is set by default,
+because the right value depends on the host.
+
+systemd: a drop-in, then restart.
+
+```sh
+sudo systemctl edit eidonix-connector      # add: [Service]
+                                           #      Environment=GOMEMLIMIT=1536MiB
+sudo systemctl restart eidonix-connector
+```
+
+OpenRC: export it in `/etc/conf.d/eidonix-connector`, then restart.
+
+```sh
+echo 'export GOMEMLIMIT=1536MiB' >> /etc/conf.d/eidonix-connector
+rc-service eidonix-connector restart
+```
+
+Docker: add `-e GOMEMLIMIT=1536MiB` (with `--memory 2g`) to `docker run`.
+
 ## 4. Changes and logs
 
 After editing the file: `eidonix-connector check`, then
@@ -147,13 +175,13 @@ owned by UID 65532 with mode `0600`, and point `access-log` at a writable
 volume.
 
 ```sh
-docker build -t eidonix-connector:0.4.0 .
+docker build -t eidonix-connector:0.6.1 .
 install -m 0600 -o 65532 -g 65532 connector.yaml /srv/eidonix-connector/connector.yaml
 docker run -d --name eidonix-connector --restart unless-stopped \
   --read-only --cap-drop ALL --security-opt no-new-privileges \
   -v /srv/eidonix-connector/connector.yaml:/etc/eidonix-connector/connector.yaml:ro \
   -v /srv/eidonix-connector/log:/var/log/eidonix-connector \
-  eidonix-connector:0.4.0
+  eidonix-connector:0.6.1
 ```
 
 (`/srv/eidonix-connector/log` must be writable by UID 65532.) Add

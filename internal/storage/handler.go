@@ -143,7 +143,7 @@ func (h *Handler) Serve(parent context.Context, raw net.Conn, br *bufio.Reader, 
 		defer lifetimeStop()
 		c.ctx = lifetimeCtx
 		reader := protocol.NewStorageBodyReader(br, *header.Size, h.max, c.expectFIN)
-		info, err := h.upload(lifetimeCtx, key, header.ContentType, reader, -1)
+		info, err := h.upload(lifetimeCtx, key, header.ContentType, reader, *header.Size)
 		e = err
 		entry.Size = info.Size
 		if err == nil {

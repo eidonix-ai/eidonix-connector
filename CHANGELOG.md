@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.6.1 (unreleased)
+
+### Connector
+
+**Storage: a small put no longer allocates a whole upload part.** Every put
+allocated a part-sized buffer (16 MiB by default) whatever the file's size, so
+a burst of small puts, or a few at once, could reach a container's memory limit
+and get the connector killed. A put whose size is known and fits in one part now
+allocates about that size. A body longer than its declared size is refused
+(`size_mismatch`) before any storage call.
+
+The "Memory" section of [INSTALL.md](docs/INSTALL.md#memory) explains setting
+`GOMEMLIMIT` (about 75% of a container's limit); the packaged systemd unit and
+OpenRC script say where.
+
 ## 0.6.0 (2026-11-01)
 
 ### Connector
