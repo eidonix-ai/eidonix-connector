@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.6.0 (unreleased)
+
+### Connector
+
+**Key server (optional).** A `key-server:` block makes the connector issue
+Cletus account keys for its organization: `allowed-domains`, an `smtp` server
+for the claim e-mail, `claim-ttl`, `state-file` and `link`
+([CONFIG.md](docs/CONFIG.md#key-server)). Operations `issue`, `reissue`,
+`import`, `revoke`, `restore`, `claim` and `list` arrive on `keyserver`
+streams ([PROTOCOL.md](docs/PROTOCOL.md#key-server)). The state file (`0600`,
+written atomically, gated like the configuration) holds each key's `k_conn`;
+a raw key lives only in an unclaimed claim. `eidonix-connector keys list |
+revoke | restore` works on the file locally. The connector announces the new
+capability `key-server/1` only when the block is configured, so older hubs
+ignore it and older connectors never receive the stream.
+
+### Hub
+
+`POST /<site>/.keyserver/<op>` on the local port relays an operation to a
+site that announced `key-server/1`, and the catalog shows `"key_server":
+true` for it ([HUB.md](docs/HUB.md#key-server)). The Go `client` package's
+`Site` has the `KeyServer` field.
+
 ## 0.5.2 (2026-10-28)
 
 **Built with Go 1.27.3.** Go 1.27.2's `crypto/x509` still trusted some

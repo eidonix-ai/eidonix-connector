@@ -154,10 +154,37 @@ files := c.Storage("site-a", "files")
 etag, err := files.Put(client.WithFor(ctx, "account-7"), "reports/q3.pdf", f, size, "application/pdf")
 ```
 
+## Key server
+
+A connector with a `key-server:` block ([CONFIG.md](CONFIG.md#key-server))
+issues and revokes account keys for its organization. The hub only relays its
+operations, and only to a site whose session announced the `key-server/1`
+capability; the catalog shows that as `"key_server": true` on the site.
+
+```
+POST http://<local>/<site>/.keyserver/<op>      body: one JSON object, at most 64 KiB
+```
+
+`op` is `issue`, `reissue`, `import`, `revoke`, `restore`, `claim` or `list`
+([PROTOCOL.md](PROTOCOL.md#key-server)). The answer is the connector's JSON
+line, unchanged, with status 200 whether the key server accepted the
+operation (`{"ok":true,…}`) or refused it (`{"ok":false,"error":<code>,…}`).
+Only a failure to reach it uses the hub's error shape: `unknown_site`,
+`site_offline`, `key_server_unavailable` (404: the site's connector offers no
+key server), `method_not_allowed` (anything but POST), `not_found` (an op
+that is not 1 to 16 lowercase letters), `invalid_request` (a body over 64
+KiB), `not_allowed` (an `applications` list that does not name the
+application; the key server's service name there is `key-server`) and
+`connector_failed`.
+
+The access log gets one line per call with `kind` `keyserver`, `service`
+`key-server` and `op`; the hub never logs bodies, and it never sees a key:
+the answer to `claim` is encrypted for the person claiming.
+
 ## Logs
 
 - **Access log**: one JSON line per request with `time`, `application`,
-  `for`, `site`, `service`, `kind` (`http`, `websocket` or `storage`),
+  `for`, `site`, `service`, `kind` (`http`, `websocket`, `storage` or `keyserver`),
   `method`, `path` (below `/<site>/<service>`, without the query), `op` (for
   storage; keys are never logged), `status`, `bytes_in`, `bytes_out`,
   `duration_ms`, `request_id`, `session` and `error`. Rotate it with

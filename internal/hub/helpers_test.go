@@ -31,6 +31,7 @@ import (
 	"github.com/eidonix-ai/eidonix-connector/client"
 	"github.com/eidonix-ai/eidonix-connector/internal/config"
 	"github.com/eidonix-ai/eidonix-connector/internal/connector"
+	"github.com/eidonix-ai/eidonix-connector/internal/keyserver"
 	csession "github.com/eidonix-ai/eidonix-connector/internal/session"
 	"github.com/eidonix-ai/eidonix-connector/protocol"
 	"github.com/gorilla/websocket"
@@ -50,6 +51,10 @@ type rig struct {
 	local  string           // http://127.0.0.1:port
 	access string           // access log path
 	logBuf *syncBuffer
+	// keyServer, when set before connect, is the connector's key-server
+	// block; its claim e-mails go to mailer.
+	keyServer *config.KeyServer
+	mailer    keyserver.Mailer
 }
 
 type syncBuffer struct {
@@ -220,6 +225,7 @@ type site struct {
 	headers  []protocol.StreamHeader
 }
 
+func (s *site) Capabilities() []string                   { return s.conn.Capabilities() }
 func (s *site) HelloServices() []protocol.Service        { return s.conn.HelloServices() }
 func (s *site) StatusServices() []protocol.ServiceStatus { return s.conn.StatusServices() }
 
@@ -287,9 +293,13 @@ func (r *rig) connect(name, token, services string, pinned ed25519.PublicKey) *s
 		r.t.Fatal(err)
 	}
 	cfg.AccessLog = filepath.Join(r.t.TempDir(), "connector-access.log")
+	cfg.KeyServer = r.keyServer
 	c, err := connector.New(cfg)
 	if err != nil {
 		r.t.Fatal(err)
+	}
+	if r.mailer != nil {
+		c.KeyServer().SetMailer(r.mailer)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	s := &site{conn: c, audit: cfg.AccessLog, cancel: cancel, done: make(chan error, 1)}

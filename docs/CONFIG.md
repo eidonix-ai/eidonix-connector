@@ -60,6 +60,7 @@ converts it; see [installation](INSTALL.md#upgrading-from-v02).
 | `upstream.ca-certificate` | Optional PEM certificate added to the system's trusted roots for the upstream connection (for networks that inspect TLS with their own CA). |
 | `access-log` | Absolute path of the request log. Default `/var/log/eidonix-connector/access.log`. |
 | `status-file` | Absolute path of the status file the running connector rewrites every 15 seconds and whenever its session changes. Default `/run/eidonix-connector/status.json`; the directory is created if missing (`0750`, the file `0640`). `eidonix-connector status` reads it. |
+| `key-server` | Optional. Issue account keys for an organization's people ([below](#key-server)). |
 | `services` | The services, by name. |
 
 ## Status
@@ -226,10 +227,59 @@ copy is there with the right size, then deletes the originals. It refuses,
 changing nothing, if any destination key already exists, and removes its own
 copies if a copy fails. `--dry-run` reports what it would move.
 
+## Key server
+
+A `key-server:` block makes this connector the issuer of Cletus account keys
+for its organization. Keys are minted here and e-mailed as a one-time claim
+link; Eidonix keeps only a hash of each key and never sees the key. Without
+the block the connector does not offer the key server.
+
+```yaml
+key-server:
+  allowed-domains: [example.com]
+  smtp:
+    address: mail.example.com:465
+    username: keys@example.com
+    password-file: /etc/eidonix-connector/smtp.pass
+    from: keys@example.com
+  # claim-ttl: 24h
+  # state-file: /var/lib/eidonix-connector/keys.json
+  # link: cletus://claim
+```
+
+| Setting | Meaning |
+| --- | --- |
+| `allowed-domains` | Required. E-mail domains (lowercase, such as `example.com`; a subdomain is a different domain) that may be issued a key. Others get `domain_not_allowed`. |
+| `smtp.address` | Required. `host:465` connects with TLS from the start; `host:587` uses STARTTLS, which is required. The certificate must verify against the system's roots. The connector may reach only this address. |
+| `smtp.username`, `smtp.from` | Required. The login, and the address mail is sent as (a bare address). |
+| `smtp.password-file` | Required. Absolute path of a file holding the password alone. It must pass the same gate as the configuration file (owned by root or the connector's user, no access for others, no group write: `0640 root:eidonix-connector` or `0600`). `check` and `run` refuse it otherwise; it is read again for each mail, so a new password needs no reload. |
+| `claim-ttl` | How long a claim works. Default and at most `24h`. |
+| `state-file` | Absolute path of the state file. Default `/var/lib/eidonix-connector/keys.json`; the connector writes it `0600`, atomically, and it must pass the same gate when it exists. |
+| `link` | The claim link without its query. Default `cletus://claim`. |
+
+The state file holds, for each uid, the e-mail, name, status and the key's
+`k_conn`, and the pending claims, whose raw key is deleted when the claim is
+used or expires. Back it up with the configuration: losing it means
+reissuing every key. A lock file `keys.json.lock` sits beside it.
+
+Operations arrive from Eidonix ([PROTOCOL.md](PROTOCOL.md#key-server)); the
+owner works on the same file locally, as the user the connector runs as:
+
+```sh
+sudo -u eidonix-connector eidonix-connector keys list
+sudo -u eidonix-connector eidonix-connector keys revoke <uid>
+sudo -u eidonix-connector eidonix-connector keys restore <uid>
+```
+
+Changes apply at once; no reload is needed. `check` describes the block, and
+`check --redacted` prints it unchanged (it holds no secret; the password is
+in its own file).
+
 ## Where it may connect
 
 The connector connects to exactly two kinds of place: the upstream (and
-`proxy`, if set) and the addresses its services list. Hostnames are resolved
+`proxy`, if set) and the addresses its services list (plus `key-server`'s
+`smtp.address`). Hostnames are resolved
 once at start and pinned: if one later resolves elsewhere, the service is
 marked unhealthy until the connector restarts. Localhost is reachable only if
 a service names it. There is no separate network policy file; `check` lists
@@ -255,4 +305,8 @@ Storage lines carry `time`, `session`, `service`, `kind`, `op`, `key_hash`
 (a keyed hash, never the file name), `status` (`ok` or an error code),
 `size`, `sha256_verified`, `duration_ms`, the same caller fields, and
 `origin` (`upstream`, or `local` for the connector's own checks and
-cleanup). SIGUSR1 reopens the file (logrotate does this).
+cleanup). Key-server lines (`kind` `keyserver`, `service` `key-server`) carry `op`
+(`issue`, `reissue`, `import`, `revoke`, `restore`, `claim` or `list`), `uid`
+when the request named one, `status` (200, or 400 when refused) and `error`
+(the refusal code). Keys, claim secrets, proofs, e-mail addresses and `k_conn`
+are never logged. SIGUSR1 reopens the file (logrotate does this).

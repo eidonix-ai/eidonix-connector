@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/eidonix-ai/eidonix-connector/internal/config"
+	"github.com/eidonix-ai/eidonix-connector/internal/keyserver"
 	"github.com/eidonix-ai/eidonix-connector/internal/models"
 	"github.com/eidonix-ai/eidonix-connector/internal/network"
 	"github.com/eidonix-ai/eidonix-connector/internal/storage"
@@ -72,6 +73,7 @@ type Connector struct {
 	auditMu     sync.Mutex
 	cancel      context.CancelFunc
 	storageInit sync.WaitGroup
+	keys        *keyserver.Server // nil without a key-server block
 }
 
 // New builds the services of a validated configuration and opens the access log.
@@ -85,6 +87,9 @@ func New(c *config.Config) (*Connector, error) {
 			return nil, e
 		}
 		x.audit = f
+	}
+	if k := c.KeyServer; k != nil {
+		x.keys = keyserver.New(c.Site, *k, keyserver.NewSMTP(k.SMTP))
 	}
 	for _, cfg := range c.Services {
 		s := newService(cfg)
@@ -469,7 +474,7 @@ func (x *Connector) ServeStream(parent context.Context, raw net.Conn) {
 		if !storageAudit {
 			entry.Time, entry.Session, entry.DurationMS = time.Now().UTC(), protocol.SessionID(ctx), time.Since(start).Milliseconds()
 			x.writeAccess(entry)
-			if entry.Kind != "" {
+			if entry.Kind != "" && entry.Kind != kindKeyServer {
 				x.count(entry.Service, entry.Error != "" || entry.Status >= 500)
 			}
 		}
@@ -490,6 +495,11 @@ func (x *Connector) ServeStream(parent context.Context, raw net.Conn) {
 		entry.Kind = s.cfg.Kind
 	}
 	x.mu.Unlock()
+	if h.Kind == kindKeyServer && x.keys != nil {
+		entry.Service, entry.Kind, entry.Op = keyServerService, kindKeyServer, h.Op
+		x.serveKeyServer(raw, br, h.Op, entry)
+		return
+	}
 	if h.Kind != "http" && h.Kind != "websocket" && h.Kind != "storage" {
 		entry.Status, entry.Error = 400, "unsupported_kind"
 		protocol.WriteStorageResult(raw, protocol.StorageErrorResult("unsupported_kind"), "")

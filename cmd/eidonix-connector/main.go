@@ -37,6 +37,9 @@ const usage = `usage:
                                                                  (YAML to stdout, review list to stderr; NAME is the connector's name in Setup)
   eidonix-connector storage move-to-root SERVICE --from FOLDER/ [--config PATH] [--dry-run]
                                                                  move a storage service's files from a folder to the top of its bucket
+  eidonix-connector keys list | revoke UID | restore UID [--config PATH]
+                                                                 list or revoke the account keys this connector issued (key-server);
+                                                                 run it as the user the connector runs as
   eidonix-connector version`
 
 func main() {
@@ -66,8 +69,8 @@ func execute(args []string, out, errOut io.Writer, uid int) error {
 	if err != nil {
 		return err
 	}
-	maxArgs := map[string]int{"init": 1, "convert": 1, "storage": 2}[command]
-	if len(rest) > maxArgs || command == "convert" && len(rest) != 1 || command == "storage" && (len(rest) != 2 || rest[0] != "move-to-root") {
+	maxArgs := map[string]int{"init": 1, "convert": 1, "storage": 2, "keys": 2}[command]
+	if len(rest) > maxArgs || command == "convert" && len(rest) != 1 || command == "storage" && (len(rest) != 2 || rest[0] != "move-to-root") || command == "keys" && !validKeysArgs(rest) {
 		return errors.New("unexpected arguments\n" + usage)
 	}
 	if (*redacted || *writeProbe) && command != "check" {
@@ -165,6 +168,8 @@ func execute(args []string, out, errOut io.Writer, uid int) error {
 			}
 		}
 		return nil
+	case "keys":
+		return keysCommand(*path, rest, out)
 	case "storage":
 		if *from == "" {
 			return errors.New("storage move-to-root needs --from FOLDER/ (for example --from cletus/)")
@@ -172,6 +177,11 @@ func execute(args []string, out, errOut io.Writer, uid int) error {
 		return moveToRoot(*path, rest[1], *from, *dryRun, out)
 	}
 	return fmt.Errorf("unknown command %q\n%s", command, usage)
+}
+
+// validKeysArgs: list, or revoke/restore with a uid.
+func validKeysArgs(rest []string) bool {
+	return len(rest) == 1 && rest[0] == "list" || len(rest) == 2 && (rest[0] == "revoke" || rest[0] == "restore")
 }
 
 // parseInterleaved parses flags that may come before, between or after the

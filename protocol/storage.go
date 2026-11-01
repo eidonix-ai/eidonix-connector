@@ -18,6 +18,7 @@ import (
 const (
 	CapabilityInference               = "inference/1"
 	CapabilityStorage                 = "storage/1"
+	CapabilityKeyServer               = "key-server/1"
 	MaxStorageFrameBytes              = 1 << 20
 	MaxStorageTrailerBytes            = 256
 	MaxStorageResultBytes             = 4 << 10

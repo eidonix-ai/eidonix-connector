@@ -51,6 +51,9 @@ func (c *Config) Describe() string {
 	}
 	w.Flush()
 	b.Write(table.Bytes())
+	if c.KeyServer != nil {
+		b.WriteString(c.KeyServer.describe())
+	}
 	fmt.Fprintf(&b, "Logs every request to %s (never contents).\n", c.AccessLog)
 	fmt.Fprintf(&b, "Keeps its status in %s (eidonix-connector status shows it).\n", c.StatusFile)
 	if c.File.Path != "" {

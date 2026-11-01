@@ -20,6 +20,19 @@ upstream:
 # access-log: /var/log/eidonix-connector/access.log   # default; one line per request, never contents
 # status-file: /run/eidonix-connector/status.json     # default; what "eidonix-connector status" shows
 
+# Issue Cletus account keys for your organization's people (optional). The keys are
+# minted here; Eidonix keeps only a hash. Run "eidonix-connector keys list" to see them.
+# key-server:
+#   allowed-domains: [example.com]        # only people with these e-mail domains get keys
+#   smtp:                                 # the mail server claim links are sent through
+#     address: mail.example.com:465       # :465 = TLS from the start; :587 = STARTTLS
+#     username: keys@example.com
+#     password-file: /etc/eidonix-connector/smtp.pass   # the password alone, mode 0640 or 0600
+#     from: keys@example.com
+#   # claim-ttl: 24h                      # how long a claim link works (at most 24h); default 24h
+#   # state-file: /var/lib/eidonix-connector/keys.json  # default; mode 0600
+#   # link: cletus://claim                # default
+
 # The services this machine shares, by name (lowercase letters, digits and -,
 # unique in this file). The connector reaches ONLY the addresses listed here,
 # and accepts only the requests each service's allowed-endpoints lists.

@@ -5,12 +5,19 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -18,6 +25,7 @@ import (
 	"time"
 
 	"github.com/eidonix-ai/eidonix-connector/client"
+	"github.com/eidonix-ai/eidonix-connector/internal/config"
 	"github.com/eidonix-ai/eidonix-connector/protocol"
 	"github.com/gorilla/websocket"
 )
@@ -827,5 +835,172 @@ func TestE2EBusyFromDrainingSessionIsRetried(t *testing.T) {
 	}
 	if refused.Load() < 6 {
 		t.Fatalf("the draining session was tried only %d times", refused.Load())
+	}
+}
+
+// ---- key server -------------------------------------------------------------
+
+// outbox is the fake mail sender of the key-server tests.
+type outbox struct {
+	mu   sync.Mutex
+	body []string
+}
+
+func (o *outbox) Send(to, subject, body string) error {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.body = append(o.body, to+"\n"+subject+"\n"+body)
+	return nil
+}
+
+func (o *outbox) last() string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.body[len(o.body)-1]
+}
+
+// keyServerCall posts a key-server operation through the hub and decodes the
+// answer, which is HTTP 200 whether the key server accepted it or not.
+func (r *rig) keyServerCall(site, op, body string) map[string]any {
+	r.t.Helper()
+	resp, b := r.do("POST", "/"+site+"/.keyserver/"+op, strings.NewReader(body), http.Header{"Content-Type": {"application/json"}})
+	var ans map[string]any
+	if resp.StatusCode != 200 || json.Unmarshal(b, &ans) != nil || ans["ok"] == nil {
+		r.t.Fatalf("%s: %d %q", op, resp.StatusCode, b)
+	}
+	return ans
+}
+
+func TestE2EKeyServer(t *testing.T) {
+	dir := t.TempDir()
+	box := &outbox{}
+	r := newRig(t, siteA+"  site-b:\n    token: "+tokenB+"\n")
+	r.keyServer = &config.KeyServer{AllowedDomains: []string{"example.com"}, ClaimTTL: time.Hour, StateFile: filepath.Join(dir, "keys.json"), Link: "cletus://claim"}
+	r.mailer = box
+	s := r.connect("site-a", tokenA, "", nil)
+	r.keyServer, r.mailer = nil, nil
+	r.connect("site-b", tokenB, "", nil) // an ordinary connector, which never offers the key server
+	waitFor(t, "key_server in the catalog", func() bool {
+		st, err := r.client("").Site(context.Background(), "site-a")
+		return err == nil && st.KeyServer
+	})
+	waitFor(t, "site-b online", func() bool {
+		st, err := r.client("").Site(context.Background(), "site-b")
+		return err == nil && st.Online
+	})
+	if st, _ := r.client("").Site(context.Background(), "site-b"); st.KeyServer {
+		t.Fatal("a connector without a key-server block advertises one")
+	}
+
+	ans := r.keyServerCall("site-a", "issue", `{"uid":"u1","email":"pat@example.com","name":"Pat","org_slug":"acme"}`)
+	if ans["ok"] != true || !strings.HasPrefix(ans["key_preview"].(string), "sk-…") || len(ans["ovh_hash"].(string)) != 64 {
+		t.Fatalf("issue: %v", ans)
+	}
+	mailText := box.last()
+	var id, secret string
+	for _, f := range strings.Fields(mailText) {
+		if rest, ok := strings.CutPrefix(f, "site-a."); ok {
+			id, secret, _ = strings.Cut(rest, ".")
+		}
+	}
+	if !strings.HasPrefix(mailText, "pat@example.com\nYour Cletus key\n") || id == "" || !strings.Contains(mailText, "cletus://claim?site=site-a&id="+id+"&s="+secret) {
+		t.Fatalf("mail %q", mailText)
+	}
+	raw, _ := base64.RawURLEncoding.DecodeString(secret)
+	m := hmac.New(sha256.New, raw)
+	m.Write([]byte("claim"))
+	proof := hex.EncodeToString(m.Sum(nil))
+
+	// Refusals are answers, not transport errors.
+	if a := r.keyServerCall("site-a", "claim", `{"claim_id":"`+id+`","proof":"00"}`); a["ok"] != false || a["error"] != "claim_invalid" {
+		t.Fatalf("wrong proof: %v", a)
+	}
+	if a := r.keyServerCall("site-a", "issue", `{"uid":"u2","email":"pat@evil.test"}`); a["error"] != "domain_not_allowed" {
+		t.Fatalf("domain: %v", a)
+	}
+	if a := r.keyServerCall("site-a", "mystery", `{}`); a["error"] != "invalid_request" {
+		t.Fatalf("unknown op: %v", a)
+	}
+	got := r.keyServerCall("site-a", "claim", `{"claim_id":"`+id+`","proof":"`+proof+`"}`)
+	if got["ok"] != true || got["nonce"] == "" || got["box"] == "" {
+		t.Fatalf("claim: %v", got)
+	}
+	if a := r.keyServerCall("site-a", "claim", `{"claim_id":"`+id+`","proof":"`+proof+`"}`); a["error"] != "claim_used" {
+		t.Fatalf("second claim: %v", a)
+	}
+	if a := r.keyServerCall("site-a", "list", `{}`); a["ok"] != true || len(a["keys"].([]any)) != 1 {
+		t.Fatalf("list: %v", a)
+	}
+	if a := r.keyServerCall("site-a", "revoke", `{"uid":"u1"}`); a["ok"] != true {
+		t.Fatalf("revoke: %v", a)
+	}
+
+	// The stream header the connector received.
+	hd := s.lastHeader()
+	if hd.Kind != "keyserver" || hd.Op != "list" && hd.Op != "revoke" || hd.Service != "key-server" {
+		t.Fatalf("stream header %+v", hd)
+	}
+	// No other site, method or op shape reaches the connector.
+	if resp, b := r.do("POST", "/site-b/.keyserver/issue", strings.NewReader(`{}`), nil); resp.StatusCode != 404 || errorCode(t, resp, b) != "key_server_unavailable" {
+		t.Fatalf("site without a key server: %d %s", resp.StatusCode, b)
+	}
+	if resp, b := r.do("GET", "/site-a/.keyserver/list", nil, nil); resp.StatusCode != 405 || errorCode(t, resp, b) != "method_not_allowed" {
+		t.Fatalf("GET: %d %s", resp.StatusCode, b)
+	}
+	if resp, b := r.do("POST", "/site-a/.keyserver/Bad-Op", strings.NewReader(`{}`), nil); resp.StatusCode != 404 || errorCode(t, resp, b) != "not_found" {
+		t.Fatalf("bad op: %d %s", resp.StatusCode, b)
+	}
+	if resp, b := r.do("POST", "/site-a/.keyserver/issue", strings.NewReader(strings.Repeat("x", 70<<10)), nil); resp.StatusCode != 400 || errorCode(t, resp, b) != "invalid_request" {
+		t.Fatalf("large body: %d %s", resp.StatusCode, b)
+	}
+	if resp, b := r.do("POST", "/site-z/.keyserver/issue", strings.NewReader(`{}`), nil); resp.StatusCode != 404 || errorCode(t, resp, b) != "unknown_site" {
+		t.Fatalf("unknown site: %d %s", resp.StatusCode, b)
+	}
+
+	// Both access logs name the operation and uid, and hold no secret.
+	waitFor(t, "connector access log", func() bool {
+		n := 0
+		for _, l := range s.connectorAccess(t) {
+			if l["kind"] == "keyserver" {
+				n++
+			}
+		}
+		return n >= 8
+	})
+	var sawIssue bool
+	for _, l := range s.connectorAccess(t) {
+		if l["kind"] == "keyserver" && l["op"] == "issue" && l["uid"] == "u1" && l["service"] == "key-server" {
+			sawIssue = true
+		}
+	}
+	if !sawIssue {
+		t.Fatalf("no issue line in %v", s.connectorAccess(t))
+	}
+	waitFor(t, "hub access log", func() bool { return len(r.accessEntries()) >= 8 })
+	hubLog, _ := os.ReadFile(r.access)
+	connLog, _ := os.ReadFile(s.audit)
+	state, _ := os.ReadFile(filepath.Join(dir, "keys.json"))
+	key := ""
+	var st struct{ Claims []struct{ Key string } }
+	_ = json.Unmarshal(state, &st)
+	for _, c := range st.Claims {
+		key += c.Key
+	}
+	if key != "" {
+		t.Fatal("the claimed key is still in the state file")
+	}
+	for _, secretText := range []string{secret, proof, got["box"].(string), "pat@example.com"} {
+		if strings.Contains(string(hubLog), secretText) || strings.Contains(string(connLog), secretText) {
+			t.Fatalf("a log holds %q", secretText)
+		}
+	}
+	var hubIssue bool
+	for _, e := range r.accessEntries() {
+		if e.Kind == "keyserver" && e.Op == "issue" && e.Status == 200 && e.Site == "site-a" && e.Service == "key-server" {
+			hubIssue = true
+		}
+	}
+	if !hubIssue {
+		t.Fatalf("no issue line in the hub log: %+v", r.accessEntries())
 	}
 }

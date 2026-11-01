@@ -49,6 +49,40 @@ Secrets are never logged; `check --redacted` prints the file with each secret
 replaced by `•••• (set)`. Back up the file securely, especially an
 `encryption-key`.
 
+## Key server
+
+With a `key-server:` block ([CONFIG.md](CONFIG.md#key-server)) the connector
+mints account keys for an organization and hands them over. What it holds
+and protects:
+
+- **A raw key exists only in a pending claim,** until the claim is used or
+  expires (at most 24 hours), when the connector deletes it. The state file
+  keeps, for each key, the e-mail, name, status and `k_conn`: the secret
+  shared by the key's owner and this connector, derived from the key. Anyone
+  who reads the state file reads every `k_conn` and every unclaimed key, so
+  it is `0600`, gated like the configuration file, and belongs in the same
+  protected backups.
+- **Eidonix never sees a key.** It receives the hash of the bearer derived
+  from the key (`ovh_hash`) and a preview of the last four characters. A
+  claim reaches the person through e-mail from this connector; Eidonix only
+  relays the claim request and the encrypted answer, which only the holder
+  of the claim secret can open.
+- **A claim is a bearer secret.** Its link and code are as strong as the
+  mailbox that received them: single use, 256-bit secret, expiry. A wrong
+  proof is answered `claim_invalid` whatever the claim's state. The connector
+  does not rate-limit claims; the secret is not guessable, and the gateway
+  should limit attempts.
+- **Eidonix chooses the uid and the e-mail address** of each issue request,
+  within `allowed-domains`. That is the same trust as the rest of the
+  connector: the owner decides which domains, Eidonix and the organization's
+  administrators decide who in them gets a key. `revoke` is a status the
+  connector records; it is enforced by whoever checks keys against it.
+- **E-mail** goes only to the configured SMTP server over verified TLS, and
+  the password is read from its own file under the configuration gate. The
+  claim e-mail is not encrypted end to end.
+- **Never logged:** keys, claim secrets and proofs, `k_conn`, e-mail
+  addresses.
+
 ## Upstream identity (review item M5)
 
 v0.1 sent the connection token in the WebSocket upgrade before the server had

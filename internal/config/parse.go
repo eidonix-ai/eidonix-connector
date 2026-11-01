@@ -28,7 +28,7 @@ const (
 )
 
 var (
-	topFields      = []string{"site", "upstream", "access-log", "status-file", "services"}
+	topFields      = []string{"site", "upstream", "access-log", "status-file", "key-server", "services"}
 	upstreamFields = []string{"url", "token", "public-keys", "proxy", "ca-certificate"}
 	httpFields     = []string{"kind", "address", "allowed-endpoints", "models", "health", "api-key", "max-concurrent-requests", "max-requests-per-minute", "idle-timeout"}
 	machineFields  = []string{"address", "ports"}
@@ -137,6 +137,11 @@ func Parse(data []byte) (*Config, error) {
 		}
 		if !filepath.IsAbs(c.StatusFile) {
 			return nil, at(n, "", "status-file must be an absolute path")
+		}
+	}
+	if n := fields["key-server"]; n != nil {
+		if c.KeyServer, err = parseKeyServer(n); err != nil {
+			return nil, err
 		}
 	}
 	section := fields["services"]

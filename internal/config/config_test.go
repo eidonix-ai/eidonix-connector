@@ -142,7 +142,7 @@ func TestUnknownSettingNamesLineAndService(t *testing.T) {
 		t.Fatalf("got  %v\nwant %s", err, want)
 	}
 	_, err = parse(t, "service:\n  a: {}\n")
-	if err == nil || !strings.HasPrefix(err.Error(), `line 6: unknown setting "service" (expected one of: site, upstream, access-log, status-file, services)`) {
+	if err == nil || !strings.HasPrefix(err.Error(), `line 6: unknown setting "service" (expected one of: site, upstream, access-log, status-file, key-server, services)`) {
 		t.Fatal(err)
 	}
 	_, err = Parse([]byte("site: s\nupstream:\n  url: https://connect.example.com\n  tokn: x\n"))

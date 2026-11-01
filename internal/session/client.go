@@ -31,6 +31,20 @@ type Handler interface {
 	StatusServices() []protocol.ServiceStatus
 }
 
+// Capable is an optional Handler capability: extra protocol capabilities to
+// announce in hello (key-server/1).
+type Capable interface {
+	Capabilities() []string
+}
+
+func capabilities(h Handler) []string {
+	caps := []string{protocol.CapabilityInference, protocol.CapabilityStorage}
+	if c, ok := h.(Capable); ok {
+		caps = append(caps, c.Capabilities()...)
+	}
+	return caps
+}
+
 // Refuser is an optional Handler capability. A draining session answers each
 // stream that still arrives by reading its header and replying with the closed
 // error code (see DrainRefusal) instead of serving it; a handler without it
@@ -256,7 +270,7 @@ func connect(ctx context.Context, endpoint, instance string, o Options, h Handle
 	if env.Type != protocol.MessageAuthOK || auth.SessionID == "" {
 		return errors.New("expected auth_ok")
 	}
-	if e = protocol.WriteMessage(control, protocol.Hello{V: protocol.Version, Type: protocol.MessageHello, Site: o.Site, InstanceID: instance, Version: o.Version, OS: runtime.GOOS, Arch: runtime.GOARCH, Capabilities: []string{protocol.CapabilityInference, protocol.CapabilityStorage}, Services: h.HelloServices()}); e != nil {
+	if e = protocol.WriteMessage(control, protocol.Hello{V: protocol.Version, Type: protocol.MessageHello, Site: o.Site, InstanceID: instance, Version: o.Version, OS: runtime.GOOS, Arch: runtime.GOARCH, Capabilities: capabilities(h), Services: h.HelloServices()}); e != nil {
 		return e
 	}
 	env, e = protocol.ReadMessage(reader)

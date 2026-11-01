@@ -180,11 +180,13 @@ type Catalog struct {
 
 // Site is one site of the catalog.
 type Site struct {
-	Name     string    `json:"name"`
-	Online   bool      `json:"online"`
-	Disabled bool      `json:"disabled,omitempty"`
-	Sessions []Session `json:"sessions"`
-	Services []Service `json:"services"`
+	Name   string `json:"name"`
+	Online bool   `json:"online"`
+	// KeyServer: the site's connector offers the key server.
+	KeyServer bool      `json:"key_server"`
+	Disabled  bool      `json:"disabled,omitempty"`
+	Sessions  []Session `json:"sessions"`
+	Services  []Service `json:"services"`
 }
 
 // Session is one live connector session of a site.

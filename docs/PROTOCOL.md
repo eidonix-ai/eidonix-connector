@@ -1,6 +1,6 @@
 # Connector protocol, version 3
 
-The Go `protocol` package defines `eidonix-connector.v3` and is the reference for every byte described here. It imports nothing from the connector, so the gateway vendors it unchanged. Capability strings version additional services independently: `inference/1` and `storage/1`. Capabilities describe the build, not which services happen to be configured. Additive JSON fields are ignored by older peers; breaking changes require a new protocol version. A v3 connector speaks only v3.
+The Go `protocol` package defines `eidonix-connector.v3` and is the reference for every byte described here. It imports nothing from the connector, so the gateway vendors it unchanged. Capability strings version additional services independently: `inference/1`, `storage/1` and `key-server/1`. Capabilities describe the build, not which services happen to be configured. Additive JSON fields are ignored by older peers; breaking changes require a new protocol version. A v3 connector speaks only v3.
 
 The gateway end is `eidonix-connect`, the hub in this repository ([HUB.md](HUB.md)); any other implementation follows the same rules.
 
@@ -115,6 +115,44 @@ Connector-generated HTTP errors carry the code in `X-Eidonix-Error` and the body
 `kind:"websocket"` starts with an HTTP GET upgrade request and response. Relay messages then consist of one type byte (1 text, 2 binary, 8 close), four unsigned big-endian length bytes and the payload, at most 4 MiB. Ping and pong are handled locally. HTTP or WebSocket streams naming an s3 service receive HTTP 403 `path_not_allowed`.
 
 Inference streams use per-service idle timeouts with no total duration cap. Closing or resetting a stream cancels its upstream request. Session disconnection cancels active streams and reconnects with jittered exponential backoff from one to sixty seconds. Reconnections keep the destination addresses pinned at start.
+
+## Key server
+
+A connector announces `key-server/1` in `hello` only when its configuration has a `key-server:` block ([CONFIG.md](CONFIG.md#key-server)). A gateway opens `kind:"keyserver"` streams only to sessions that announced it; an older connector never receives one. The stream is the base header with `service:"key-server"` and `op`, then one JSON request as the body, at most 64 KiB, ended by the sender's FIN. The connector answers with one JSON line and closes:
+
+```json
+{"ok":true,"ovh_hash":"…"}
+{"ok":false,"error":"claim_used","message":"this claim was already used"}
+```
+
+Key-server answers have no `v` field and always end the stream; a refusal is `ok:false` with one of the codes below, not a stream error. A malformed or oversized request is `invalid_request`.
+
+| Op | Request | Answer |
+| --- | --- | --- |
+| `issue` | `uid`, `email`, `name`, `org_slug` | `ovh_hash`, `key_preview`, `claim_expires` |
+| `reissue` | `uid` | as `issue` |
+| `import` | `uid`, `email`, `name`, `k_conn` | none |
+| `revoke`, `restore` | `uid` | none |
+| `claim` | `claim_id`, `proof` | `nonce`, `box` |
+| `list` | none | `keys`: `uid`, `email`, `name`, `status`, `created`, `pending_claim` |
+
+`uid` is 1 to 64 of `A-Za-z0-9._:-`; `name` and `org_slug` are at most 100 characters without control characters.
+
+**issue and reissue.** The connector refuses an `email` outside the configured `allowed-domains` (`domain_not_allowed`), mints a key, stores its `k_conn`, creates a claim, e-mails the claim to the address and answers. `issue` for a uid that already has a key is `invalid_request`; `reissue` for an unknown uid is `unknown_uid`, and replaces the stored `k_conn` and any earlier claim of that uid. If the e-mail cannot be sent nothing changes (`unavailable`). `claim_expires` is RFC 3339 UTC. The derived values below are the ones every party computes from the key's secret (its 32 characters after `sk-` or `dy-`):
+
+| Value | Definition |
+| --- | --- |
+| key | `sk-` and 32 characters of `A-Za-z0-9` from a cryptographic random source |
+| bearer | `ck1-` and unpadded base64url of `HMAC-SHA256(secret, "cletus-ovh-v1")` |
+| `ovh_hash` | lowercase hex of `SHA-256(bearer)` |
+| `k_conn` | lowercase hex of `HMAC-SHA256(secret, "cletus-connector-v1|" + site)` |
+| `key_preview` | `sk-…` and the key's last four characters |
+
+**Claims.** A claim has a `claim_id` (16 random bytes) and a claim secret (32 random bytes), both unpadded base64url, and is valid for `claim-ttl`. The e-mail carries them as the link `<link>?site=<site>&id=<claim_id>&s=<secret>` and as the code `<site>.<claim_id>.<secret>`. To claim, the holder sends `proof = lowercase hex of HMAC-SHA256(secret_bytes, "claim")`, where `secret_bytes` is the base64url-decoded claim secret, and the connector compares it in constant time. The answer is `nonce` and `box`, both standard base64: `box` is the ciphertext and tag of AES-256-GCM over the raw key, with the 12-byte `nonce`, no additional data, and a key of `HKDF-SHA256(secret_bytes, salt = none, info = "cletus-claim-resp-v1")` (32 bytes). The connector then deletes the key from the claim; a claim works once.
+
+**Codes.** `invalid_request`, `domain_not_allowed`, `unknown_uid`, `claim_expired`, `claim_used`, `claim_invalid` (no such claim, a wrong proof, or the key was revoked) and `unavailable` (the state file or the mail server failed). A wrong proof is answered before `claim_used` or `claim_expired`, so only the holder of a claim learns its state.
+
+**import** stores `k_conn` (64 lowercase hex characters) for a key issued elsewhere, without e-mail and without the domain check; repeating it replaces the entry and keeps its status. **revoke** marks the uid revoked and deletes its pending claims; **restore** marks it active. Neither deletes `k_conn`. `list` never returns `k_conn`, a key or a claim secret.
 
 ## Storage requests
 

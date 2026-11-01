@@ -27,18 +27,19 @@ var hubErrors = map[string]struct {
 	status  int
 	message string
 }{
-	"unknown_site":       {404, "no such site"},
-	"unknown_service":    {404, "the site offers no such service"},
-	"site_offline":       {503, "the site is not connected"},
-	"service_unhealthy":  {503, "the site reports the service unhealthy"},
-	"busy":               {503, "the service is at its concurrency limit"},
-	"not_allowed":        {403, "this application may not use this service"},
-	"read_only":          {403, "the storage service is read-only"},
-	"invalid_request":    {400, "invalid request"},
-	"not_found":          {404, "not found"},
-	"method_not_allowed": {405, "method not allowed"},
-	"connector_failed":   {502, "the connector session failed during the request"},
-	"response_too_large": {502, "response exceeds size limit"},
+	"unknown_site":           {404, "no such site"},
+	"unknown_service":        {404, "the site offers no such service"},
+	"site_offline":           {503, "the site is not connected"},
+	"service_unhealthy":      {503, "the site reports the service unhealthy"},
+	"busy":                   {503, "the service is at its concurrency limit"},
+	"not_allowed":            {403, "this application may not use this service"},
+	"read_only":              {403, "the storage service is read-only"},
+	"invalid_request":        {400, "invalid request"},
+	"not_found":              {404, "not found"},
+	"method_not_allowed":     {405, "method not allowed"},
+	"connector_failed":       {502, "the connector session failed during the request"},
+	"key_server_unavailable": {404, "the site offers no key server"},
+	"response_too_large":     {502, "response exceeds size limit"},
 }
 
 // codeStatus is the HTTP status of a hub or connector code.
@@ -156,6 +157,18 @@ func (h *Hub) serveLocal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	e.Site = parts[0]
+	if len(parts) >= 2 && parts[1] == keyServerPath {
+		if h.config().Sites[e.Site] == nil {
+			c.fail("unknown_site")
+			return
+		}
+		op := ""
+		if len(parts) == 3 {
+			op = parts[2]
+		}
+		h.serveKeyServer(c, op)
+		return
+	}
 	if len(parts) < 2 || !protocol.ValidServiceName(parts[1]) {
 		c.fail("unknown_service")
 		return

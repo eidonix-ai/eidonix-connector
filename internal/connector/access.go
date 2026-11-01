@@ -28,6 +28,9 @@ type accessEntry struct {
 	RequestID     string    `json:"request_id"`
 	UpstreamHost  string    `json:"upstream_host"`
 	Error         string    `json:"error"`
+	// Op and UID are set on key-server lines only (never a key or secret).
+	Op  string `json:"op,omitempty"`
+	UID string `json:"uid,omitempty"`
 }
 
 func (x *Connector) writeAccess(e *accessEntry) {

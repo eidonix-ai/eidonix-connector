@@ -50,6 +50,9 @@ type Config struct {
 	// StatusFile is the absolute path of the status file the running
 	// connector keeps up to date.
 	StatusFile string
+	// KeyServer is the key-server block; nil when the connector does not
+	// issue keys.
+	KeyServer *KeyServer
 	// File describes the file Load read (zero for Parse).
 	File FileInfo
 }
@@ -144,6 +147,9 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	c.File = info
+	if err := c.checkKeyServerFiles(); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
 	return c, nil
 }
 

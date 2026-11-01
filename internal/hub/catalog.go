@@ -19,10 +19,13 @@ type Catalog struct {
 type CatalogSite struct {
 	Name string `json:"name"`
 	// Online: at least one session takes new requests.
-	Online   bool             `json:"online"`
-	Disabled bool             `json:"disabled,omitempty"`
-	Sessions []CatalogSession `json:"sessions"`
-	Services []CatalogService `json:"services"`
+	Online bool `json:"online"`
+	// KeyServer: a session that takes new requests offers the key server
+	// (POST /<site>/.keyserver/<op>).
+	KeyServer bool             `json:"key_server"`
+	Disabled  bool             `json:"disabled,omitempty"`
+	Sessions  []CatalogSession `json:"sessions"`
+	Services  []CatalogService `json:"services"`
 }
 
 // CatalogSession is one live connector session.
@@ -72,6 +75,7 @@ func (h *Hub) catalogSite(site *Site) CatalogSite {
 		}
 		draining := s.draining.Load()
 		cs.Online = cs.Online || !draining
+		cs.KeyServer = cs.KeyServer || !draining && s.has(protocol.CapabilityKeyServer)
 		cs.Sessions = append(cs.Sessions, CatalogSession{Instance: s.instance, Version: s.version,
 			ConnectedAt: s.connectedAt.Format(time.RFC3339), RemoteIP: s.remoteIP, Draining: draining})
 		s.mu.Lock()

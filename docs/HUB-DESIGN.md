@@ -154,7 +154,7 @@ request goes ahead without it).
 
 ```json
 {"sites": [{
-  "name": "site-a", "online": true,
+  "name": "site-a", "online": true, "key_server": false,
   "sessions": [{"instance": "…", "version": "0.3.0", "connected_at": "…", "remote_ip": "…"}],
   "services": [{
     "name": "chat", "kind": "http", "healthy": true,
@@ -173,7 +173,8 @@ sessions is merged: healthy if any non-draining session reports it healthy;
 `max_concurrent_requests` the largest of the non-draining sessions' (each
 session enforces its own, so during a connector reload capacity briefly
 doubles); `in_flight` (the hub's own count of requests in progress) summed.
-`online` means at least one non-draining session. Every site in the file is
+`online` means at least one non-draining session; `key_server` that one of
+them offers the key server ([HUB.md](HUB.md#key-server)). Every site in the file is
 listed; a disabled one adds `"disabled": true`. `endpoints` and `models` are
 left out when empty. `/v1/catalog/<site>` answers that site's object (not
 wrapped in `sites`), or `unknown_site`.
