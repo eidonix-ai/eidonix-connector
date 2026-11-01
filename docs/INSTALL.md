@@ -38,19 +38,19 @@ then verifies every package itself:
 
 ```sh
 cp eidonix-connector.rsa.pub /etc/apk/keys/
-apk add ./eidonix-connector_0.6.1_amd64.apk
+apk add ./eidonix-connector_0.6.2_amd64.apk
 ```
 
 Debian / Ubuntu:
 
 ```sh
-sudo apt install ./eidonix-connector_0.6.1_amd64.deb
+sudo apt install ./eidonix-connector_0.6.2_amd64.deb
 ```
 
 Fedora / RHEL / Rocky / Alma:
 
 ```sh
-sudo dnf install ./eidonix-connector_0.6.1_amd64.rpm
+sudo dnf install ./eidonix-connector_0.6.2_amd64.rpm
 ```
 
 The `.deb` and `.rpm` carry no package-manager signature; their integrity
@@ -175,13 +175,13 @@ owned by UID 65532 with mode `0600`, and point `access-log` at a writable
 volume.
 
 ```sh
-docker build -t eidonix-connector:0.6.1 .
+docker build -t eidonix-connector:0.6.2 .
 install -m 0600 -o 65532 -g 65532 connector.yaml /srv/eidonix-connector/connector.yaml
 docker run -d --name eidonix-connector --restart unless-stopped \
   --read-only --cap-drop ALL --security-opt no-new-privileges \
   -v /srv/eidonix-connector/connector.yaml:/etc/eidonix-connector/connector.yaml:ro \
   -v /srv/eidonix-connector/log:/var/log/eidonix-connector \
-  eidonix-connector:0.6.1
+  eidonix-connector:0.6.2
 ```
 
 (`/srv/eidonix-connector/log` must be writable by UID 65532.) Add

@@ -49,6 +49,18 @@ Secrets are never logged; `check --redacted` prints the file with each secret
 replaced by `•••• (set)`. Back up the file securely, especially an
 `encryption-key`.
 
+## The hub's local API
+
+The hub's local port is open to anything that can reach it unless the hub
+file has a top-level `applications` block. With it, every request to a site's
+services and key server must carry an application's key
+(`X-Eidonix-Application-Key`, `eak_` plus 32 random bytes), compared in
+constant time. The key names the application for the `applications` lists
+and the access log, whatever `X-Eidonix-Application` says, and is never
+forwarded to a connector or logged. The catalog and `/healthz` stay open.
+Keys are bearer secrets over plain HTTP: keep `local` on a private network
+([HUB.md](HUB.md#application-keys)).
+
 ## Key server
 
 With a `key-server:` block ([CONFIG.md](CONFIG.md#key-server)) the connector

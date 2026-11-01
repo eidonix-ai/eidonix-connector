@@ -23,6 +23,19 @@ func NewToken() (string, error) {
 	return "cxn_" + strings.ToLower(base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(id)) + "_" + base64.RawURLEncoding.EncodeToString(secret), nil
 }
 
+// appKeyPrefix starts every application key.
+const appKeyPrefix = "eak_"
+
+// NewAppKey returns a fresh application key: eak_ + 32 random bytes as
+// unpadded base64url.
+func NewAppKey() (string, error) {
+	secret := make([]byte, 32)
+	if _, err := rand.Read(secret); err != nil {
+		return "", err
+	}
+	return appKeyPrefix + base64.RawURLEncoding.EncodeToString(secret), nil
+}
+
 // NewServerKey returns a fresh Ed25519 identity: the value for server-key
 // (base64 of the 32-byte seed) and its public key (base64), which goes in each
 // connector's public-keys.

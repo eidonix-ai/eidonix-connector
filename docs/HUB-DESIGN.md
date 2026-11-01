@@ -144,7 +144,11 @@ An application may send `X-Eidonix-Application: <name>` (and, for its own
 records, `X-Eidonix-For: <text>` — e.g. an account or user it serves). Both
 appear in the hub's log and, sent on to the site, in the connector's access
 log, so a site sees which application used its hardware. They are labels, not
-credentials (except for a site or service with an `applications` list). Each
+credentials (except for a site or service with an `applications` list, and
+except once the hub file has a top-level `applications` block: then the
+request must send `X-Eidonix-Application-Key: eak_…`, the hub uses the name
+that key belongs to and ignores the label, and the catalog and `/healthz` are
+the only open paths; see [HUB.md](HUB.md#application-keys)). Each
 is at most 64 printable ASCII characters; an invalid label is dropped (the
 request goes ahead without it).
 
@@ -194,6 +198,7 @@ Errors made by the hub or a connector are
 | `site_offline` | 503 | no live, non-draining session for the site (also a disabled site) |
 | `service_unhealthy` | 503 | the site reports the service unhealthy |
 | `busy` | 503 | the service is at its concurrency limit (`Retry-After: 1`); a connector's own `busy` is reported the same way |
+| `application_key_required` | 401 | the file has an `applications` block and the request's `X-Eidonix-Application-Key` is missing or unknown |
 | `not_allowed` | 403 | the site (or service) has an `applications` list without this application |
 | `read_only`, `method_not_allowed`, `invalid_request` | 403, 405, 400 | storage API (§4.3) and malformed requests |
 | `not_found` | 404 | storage: no such object; also any other path under `/v1/` |

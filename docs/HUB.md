@@ -54,6 +54,12 @@ local: :8080                  # applications on this host; never publish it
 server-key: <base64>          # from eidonix-connect server-key
 access-log: /var/log/eidonix-connect/access.log   # optional (default); - for standard output
 
+applications:                 # optional: once present, the local API needs a key
+  app-one:
+    key: eak_…                # from eidonix-connect app-key
+  app-two:
+    key: eak_…
+
 sites:
   site-a:
     token: cxn_…              # from eidonix-connect token
@@ -70,14 +76,15 @@ sites:
 | Setting | Meaning |
 | --- | --- |
 | `public` | Required. `[host]:port` connectors' sessions arrive on (`/v1/connectors/session`). Put TLS in front of it. |
-| `local` | Required. `[host]:port` of the local API. Bind it to a private address; it has no authentication. |
+| `local` | Required. `[host]:port` of the local API. Bind it to a private address. It has no authentication until the file has an `applications` block (below). |
 | `server-key` | Required. Standard base64 of a 32-byte Ed25519 seed (what `server-key` prints) or a 64-byte private key. Its public key (shown by `check`) goes in every connector's `public-keys`. |
 | `access-log` | Absolute path, or `-` for standard output. Default `/var/log/eidonix-connect/access.log`. |
+| `applications` (top level) | Optional. Application names with a `key` each: `eak_` plus 32 random bytes as unpadded base64url (43 characters); `eidonix-connect app-key` prints one. Names are labels of 1-64 printable characters without spaces; every name and key must be unique. Once the block lists an application, [every request needs a key](#application-keys). |
 | `sites.<name>` | One entry per site. The name is the `site:` in that site's connector file: 1-40 lowercase letters, digits or `-`. `v1` and `healthz` are reserved. |
 | `token` | Required. The site's connection token, `cxn_<16 characters>_<43 characters>`. Every token in the file must be unique. |
 | `next-token` | Optional second token accepted during a rotation. |
 | `disabled` | `true` refuses the site's sessions (and ends live ones) but keeps the entry. |
-| `applications` | Optional list of application names (the `X-Eidonix-Application` label) that may use the site. Without it every application on the host may. |
+| `applications` (under a site) | Optional list of application names that may use the site. Without an `applications` block at the top, the name is the self-declared `X-Eidonix-Application` label (a guard against mistakes, not a credential); with one, it is the authenticated application. Without a list every application may. |
 | `services.<name>.applications` | Optional list for one service; it replaces the site's list for that service. A service named here need not be offered by the site (yet); `check` warns when the connected site does not offer it. |
 
 Rules: unknown or misspelt settings are refused with the line at fault, like
@@ -96,7 +103,8 @@ The hub reads the file every second. A valid change applies at once:
 - removing a site, disabling it, or changing its tokens so the token a
   session used is no longer listed ends that site's sessions immediately,
   including their in-flight requests;
-- `applications` changes apply to the next request;
+- `applications` changes (the top-level keys and the site and service lists)
+  apply to the next request, without dropping sessions;
 - a new `server-key` is proved to new sessions (live ones continue);
   connectors must list the new public key first;
 - a new `access-log` path is opened.
@@ -104,6 +112,43 @@ The hub reads the file every second. A valid change applies at once:
 `public` and `local` take effect at the next start. A file that fails
 validation is reported in the operational log and the last good one stays in
 force.
+
+### Application keys
+
+Without a top-level `applications` block the local API is open: anything that
+can reach `local` can use every site, and the `X-Eidonix-Application` label
+is only a label. With the block, every request to `/<site>/<service>/…`
+(HTTP, SSE, WebSocket and storage) and to `/<site>/.keyserver/<op>` must send
+
+```
+X-Eidonix-Application-Key: eak_…
+```
+
+The hub finds the application whose key matches (constant-time comparison)
+and uses **that name** for the `applications` lists and the access log,
+ignoring any `X-Eidonix-Application` header. A missing or unknown key is
+answered `401` with the error code `application_key_required`. `GET
+/v1/catalog`, `GET /v1/catalog/<site>` and `GET /healthz` stay open (they
+show metadata only). The key header is never sent on to a connector, and the
+access log records the application's name, never its key.
+
+Site and service `applications` lists are then real access control:
+`services: {files: {applications: [app-one]}}` refuses every other
+application with `not_allowed`.
+
+**Rolling out** (nothing breaks if you go in this order):
+
+1. Deploy this hub version; the file has no `applications` block, so nothing
+   changes.
+2. For each application run `eidonix-connect app-key`, and give that
+   application its key to send as `X-Eidonix-Application-Key`.
+3. Add the `applications` block with the names and keys. It applies within a
+   second; an application that has not been given its key gets 401 from now
+   on.
+
+To rotate a key, add the new key under a second name (`app-one-next`),
+switch the application over, then remove the old entry. The access log shows
+which name each request used.
 
 ### Rotating a site's token
 
@@ -127,6 +172,7 @@ force.
 | `eidonix-connect check [--config PATH]` | Validate the file and explain it. If the hub is running, warn about per-service settings for services the connected site does not offer. |
 | `eidonix-connect status [--config PATH \| --url URL] [--healthz]` | Print sites, sessions and services as a table, from the running hub's catalog (URL derived from the file's `local`). `--healthz` only checks that the hub answers (the container healthcheck). |
 | `eidonix-connect token` | Print a new site token. |
+| `eidonix-connect app-key` | Print a new application key. |
 | `eidonix-connect server-key` | Print a new `server-key`; its public key goes to standard error. |
 | `eidonix-connect version` | |
 
@@ -206,13 +252,19 @@ no new requests until it closes.
   the site that token belongs to. Upgrade attempts are
   rate-limited per address (the last `X-Forwarded-For` hop when the peer is
   the private front proxy) and per token.
-- `local` has no authentication by design: anything that can reach it can
-  use every site without an `applications` list. Keep it on a private network
-  that only trusted applications join. The labels are not credentials, except
-  for sites and services with an `applications` list.
+- `local` has no authentication until the file has a top-level
+  `applications` block. Then every request to a site's services or key server
+  must carry an application's key ([Application keys](#application-keys)),
+  and the site and service `applications` lists check the authenticated name;
+  only the catalog and `/healthz` stay open. Without the block anything that
+  can reach `local` can use every site, the labels are not credentials, and
+  `local` belongs on a private network that only trusted applications join.
+  Even with keys, keep it private: a key is a bearer secret sent in the clear
+  over plain HTTP.
 - What protects a site is its own connector file: the connector reaches only
   the addresses and requests listed there, whoever asks.
 - The hub strips hop-by-hop headers, `X-Eidonix-*` headers and credentials
-  (`Authorization`, `Cookie`, `X-Api-Key`) from requests; the connector
+  (`Authorization`, `Cookie`, `X-Api-Key`) from requests (the application
+  key is one of the `X-Eidonix-*` headers); the connector
   applies its own header allowlist and its own service credentials.
-- The file holds the server key and every token; protect it and its backups.
+- The file holds the server key, every token and every application key; protect it and its backups.

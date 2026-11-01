@@ -3,6 +3,7 @@ package hub
 import (
 	"crypto/ed25519"
 	"encoding/base64"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -85,12 +86,83 @@ func TestParseValid(t *testing.T) {
 	}
 }
 
+// Synthetic application keys: eak_ and 43 base64url characters.
+const (
+	keyCletus  = "eak_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+	keyGateway = "eak_BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
+)
+
+func TestParseApplicationKeys(t *testing.T) {
+	base := "public: :8443\nlocal: :8080\nserver-key: " + zeroSeed + "\n"
+	c, err := Parse([]byte(base + "applications:\n  cletus:\n    key: " + keyCletus + "\n  llm-gateway:\n    key: " + keyGateway + "\n"))
+	if err != nil || len(c.AppKeys) != 2 {
+		t.Fatal(c, err)
+	}
+	for key, want := range map[string]string{keyCletus: "cletus", keyGateway: "llm-gateway"} {
+		if got, ok := c.ApplicationFor(key); !ok || got != want {
+			t.Errorf("%s: %q %v", want, got, ok)
+		}
+	}
+	for _, key := range []string{"", keyCletus + "x", "eak_CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC"} {
+		if got, ok := c.ApplicationFor(key); ok || got != "" {
+			t.Errorf("%q matched %q", key, got)
+		}
+	}
+	if d := c.Describe(); !strings.Contains(d, "keys set for: cletus, llm-gateway") || strings.Contains(d, keyCletus) || strings.Contains(d, keyGateway) {
+		t.Fatalf("describe:\n%s", d)
+	}
+	// No block (or an empty one): no keys, the local port stays open.
+	for _, f := range []string{base, base + "applications:\n"} {
+		if c, err := Parse([]byte(f)); err != nil || len(c.AppKeys) != 0 || !strings.Contains(c.Describe(), "local port is open") {
+			t.Fatal(c, err)
+		}
+	}
+	for _, tc := range []struct{ block, want string }{
+		{"applications:\n  cletus:\n    key: " + keyCletus + "\n  other:\n    key: " + keyCletus + "\n", `line 7: application "other": has the same key as application "cletus"`},
+		{"applications:\n  cletus:\n    key: " + keyCletus + "\n  cletus:\n    key: " + keyGateway + "\n", `application "cletus": name already used on line 5`},
+		{"applications:\n  cletus:\n    key: secret\n", `line 6: application "cletus": key is not an application key`},
+		{"applications:\n  cletus:\n    key: eak_AAAA\n", "key is not an application key"},
+		{"applications:\n  cletus:\n    key: cxn_aaaaaaaaaaaaaaaa_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n", "key is not an application key"},
+		{"applications:\n  cletus: {}\n", `application "cletus": key is required`},
+		{"applications:\n  has space:\n    key: " + keyCletus + "\n", `application name "has space"`},
+		{"applications:\n  cletus:\n    key: " + keyCletus + "\n    token: x\n", `unknown setting "token" in application "cletus" (expected one of: key)`},
+		{"applications: [cletus]\n", "applications must be a set of"},
+	} {
+		_, err := Parse([]byte(base + tc.block))
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%q: %v, want %q", tc.block, err, tc.want)
+		} else if strings.Contains(err.Error(), keyCletus) {
+			t.Errorf("error echoes a key: %v", err)
+		}
+	}
+}
+
+func TestNewAppKey(t *testing.T) {
+	a, _ := NewAppKey()
+	b, _ := NewAppKey()
+	if a == b || len(a) != len(keyCletus) {
+		t.Fatal(a, b)
+	}
+	base := "public: :8443\nlocal: :8080\nserver-key: " + zeroSeed + "\n"
+	if _, err := Parse([]byte(base + "applications:\n  x:\n    key: " + a + "\n")); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCleanHeadersDropsTheApplicationKey(t *testing.T) {
+	h := http.Header{HeaderApplicationKey: {keyCletus}, "x-eidonix-application-key": {keyCletus}, HeaderApplication: {"cletus"}, "Content-Type": {"text/plain"}}
+	out := cleanHeaders(h)
+	if len(out) != 1 || out.Get("Content-Type") != "text/plain" {
+		t.Fatalf("%v", out)
+	}
+}
+
 func TestParseErrorsNameTheLine(t *testing.T) {
 	base := "public: :8443\nlocal: :8080\nserver-key: " + zeroSeed + "\n"
 	for _, tc := range []struct{ file, want string }{
 		{"", "the file is empty"},
 		{"public: :8443\nlocal: :8080\n", "line 1: server-key is required"},
-		{base + "listen: :1\n", `line 4: unknown setting "listen" (expected one of: public, local, server-key, access-log, sites)`},
+		{base + "listen: :1\n", `line 4: unknown setting "listen" (expected one of: public, local, server-key, access-log, applications, sites)`},
 		{"public: 8443\nlocal: :8080\nserver-key: " + zeroSeed + "\n", "line 1: public must be an address"},
 		{"public: :8080\nlocal: :8080\nserver-key: " + zeroSeed + "\n", "line 2: local must not be the same address as public"},
 		{"public: :8443\nlocal: :8080\nserver-key: c2hvcnQ=\n", "line 3: server-key must be a 32-byte"},

@@ -19,6 +19,15 @@ func (c *Config) Describe() string {
 	} else {
 		fmt.Fprintf(&b, "Logs every request to %s.\n", c.AccessLog)
 	}
+	if len(c.AppKeys) > 0 {
+		names := make([]string, len(c.AppKeys))
+		for i, a := range c.AppKeys {
+			names[i] = a.Name
+		}
+		fmt.Fprintf(&b, "Applications must send their key (X-Eidonix-Application-Key); keys set for: %s.\n", strings.Join(names, ", "))
+	} else {
+		b.WriteString("The local port is open: any application on this host may use it (add an applications block to require keys).\n")
+	}
 	fmt.Fprintf(&b, "%d site%s:\n", len(c.Order), plural(len(c.Order)))
 	for _, name := range c.Order {
 		s := c.Sites[name]

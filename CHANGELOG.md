@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.6.2 (unreleased)
+
+### Hub
+
+**Per-application keys for the local API.** The local port had no
+authentication, and the `applications` lists compared the self-declared
+`X-Eidonix-Application` header, which guards against mistakes, not attacks. A
+new optional top-level `applications:` block gives each application a key
+(`eidonix-connect app-key` prints one, `eak_` plus 32 random bytes). Once the
+block is present, every request to a site's services and key server must send
+`X-Eidonix-Application-Key`; the hub uses the name of the application that
+key belongs to for the site and service `applications` lists and the access
+log (never the key), ignores `X-Eidonix-Application`, and answers a missing or
+unknown key `401 application_key_required`. The catalog and `/healthz` stay
+open, the key is never forwarded to a connector, and a reload applies new
+keys without dropping sessions. Without the block nothing changes
+([HUB.md](docs/HUB.md#application-keys)).
+
 ## 0.6.1 (unreleased)
 
 ### Connector

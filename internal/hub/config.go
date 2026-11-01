@@ -43,9 +43,10 @@ const (
 var reservedSites = map[string]bool{"v1": true, "healthz": true}
 
 var (
-	topFields     = []string{"public", "local", "server-key", "access-log", "sites"}
+	topFields     = []string{"public", "local", "server-key", "access-log", "applications", "sites"}
 	siteFields    = []string{"token", "next-token", "disabled", "applications", "services"}
 	serviceFields = []string{"applications"}
+	appKeyFields  = []string{"key"}
 )
 
 // Config is a validated hub file.
@@ -60,9 +61,19 @@ type Config struct {
 	PublicKey string
 	// AccessLog is a file path, or "-" for standard output.
 	AccessLog string
+	// AppKeys, when non-empty, makes the local API require an application's
+	// key (X-Eidonix-Application-Key) on every site request.
+	AppKeys []AppKey
 	// Sites by name; Order is file order.
 	Sites map[string]*Site
 	Order []string
+}
+
+// AppKey is one applications entry: a name and the secret that proves it.
+type AppKey struct {
+	Name string
+	Key  string
+	Line int
 }
 
 // Site is one sites entry.
@@ -91,6 +102,18 @@ type SiteService struct {
 // Accepts reports whether token is one of the site's tokens (constant time).
 func (s *Site) Accepts(token string) bool {
 	return constantEqual(token, s.Token) || s.NextToken != "" && constantEqual(token, s.NextToken)
+}
+
+// ApplicationFor returns the application whose key is key. Every key is
+// compared, in constant time, so the time taken does not say which matched.
+func (c *Config) ApplicationFor(key string) (string, bool) {
+	name, found := "", false
+	for _, a := range c.AppKeys {
+		if constantEqual(key, a.Key) && !found {
+			name, found = a.Name, true
+		}
+	}
+	return name, found
 }
 
 // Allows reports whether an application label may use one of the site's
@@ -236,6 +259,11 @@ func Parse(data []byte) (*Config, error) {
 			return nil, at(n, "", "access-log must be an absolute path, or - for standard output")
 		}
 	}
+	if n := f["applications"]; n != nil && n.Tag != "!!null" {
+		if c.AppKeys, err = parseAppKeys(n); err != nil {
+			return nil, err
+		}
+	}
 	section := f["sites"]
 	if section == nil || section.Tag == "!!null" {
 		return c, nil
@@ -334,6 +362,45 @@ func parseSite(k, v *yaml.Node) (*Site, error) {
 		}
 	}
 	return s, nil
+}
+
+// parseAppKeys reads the top-level applications block: names with keys.
+func parseAppKeys(n *yaml.Node) ([]AppKey, error) {
+	if n.Kind != yaml.MappingNode || len(n.Content) > 2*MaxApplications {
+		return nil, at(n, "", "applications must be a set of 1 to %d applications by name (name: then key: eak_...)", MaxApplications)
+	}
+	var out []AppKey
+	for i := 0; i+1 < len(n.Content); i += 2 {
+		k, v := n.Content[i], n.Content[i+1]
+		if k.Kind != yaml.ScalarNode || !validLabel(k.Value) || strings.Contains(k.Value, " ") {
+			return nil, at(k, "", "application name %q must be at most %d printable characters without spaces", k.Value, MaxLabelBytes)
+		}
+		ctx := fmt.Sprintf("application %q", k.Value)
+		f, err := mapping(v, ctx, appKeyFields)
+		if err != nil {
+			return nil, err
+		}
+		if f["key"] == nil {
+			return nil, at(k, ctx, "key is required (eidonix-connect app-key prints a new one)")
+		}
+		key, err := line(f["key"], ctx, "key")
+		if err != nil {
+			return nil, err
+		}
+		if raw, e := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(key, appKeyPrefix)); e != nil || !strings.HasPrefix(key, appKeyPrefix) || len(raw) != 32 {
+			return nil, at(f["key"], ctx, "key is not an application key (eak_<43 characters>); eidonix-connect app-key prints a new one")
+		}
+		for _, prior := range out {
+			if prior.Name == k.Value {
+				return nil, at(k, ctx, "name already used on line %d", prior.Line)
+			}
+			if constantEqual(prior.Key, key) {
+				return nil, at(k, ctx, "has the same key as application %q; every key must be unique (eidonix-connect app-key prints a new one)", prior.Name)
+			}
+		}
+		out = append(out, AppKey{k.Value, key, k.Line})
+	}
+	return out, nil
 }
 
 func applications(n *yaml.Node, ctx string) ([]string, error) {

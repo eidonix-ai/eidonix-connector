@@ -50,6 +50,7 @@ type rig struct {
 	front  *httptest.Server // TLS → hub session endpoint
 	local  string           // http://127.0.0.1:port
 	access string           // access log path
+	apps   string           // the applications block (YAML under applications:), if any
 	logBuf *syncBuffer
 	// keyServer, when set before connect, is the connector's key-server
 	// block; its claim e-mails go to mailer.
@@ -70,16 +71,22 @@ func (s *syncBuffer) Write(p []byte) (int, error) {
 func (s *syncBuffer) String() string { s.mu.Lock(); defer s.mu.Unlock(); return s.b.String() }
 
 // hubFile renders a hub file for key with sites (YAML under sites:).
-func hubFile(key ed25519.PrivateKey, access, sites string) string {
+func hubFile(key ed25519.PrivateKey, access, apps, sites string) string {
+	if apps != "" {
+		apps = "applications:\n" + apps
+	}
 	return "public: 127.0.0.1:0\nlocal: 127.0.0.1:0\nserver-key: " + base64.StdEncoding.EncodeToString(key.Seed()) +
-		"\naccess-log: " + access + "\nsites:\n" + sites
+		"\naccess-log: " + access + "\n" + apps + "sites:\n" + sites
 }
 
-func newRig(t *testing.T, sites string) *rig {
+func newRig(t *testing.T, sites string) *rig { return newKeyedRig(t, "", sites) }
+
+// newKeyedRig is newRig with an applications block (YAML under applications:).
+func newKeyedRig(t *testing.T, apps, sites string) *rig {
 	t.Helper()
 	_, key, _ := ed25519.GenerateKey(rand.Reader)
 	dir := t.TempDir()
-	r := &rig{t: t, path: filepath.Join(dir, "connect.yaml"), key: key, access: filepath.Join(dir, "access.log"), logBuf: &syncBuffer{}}
+	r := &rig{t: t, path: filepath.Join(dir, "connect.yaml"), key: key, access: filepath.Join(dir, "access.log"), logBuf: &syncBuffer{}, apps: apps}
 	r.write(sites)
 	r.srv = &Server{Path: r.path, ReloadInterval: 25 * time.Millisecond, Log: slog.New(slog.NewTextHandler(r.logBuf, nil))}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -117,7 +124,7 @@ func (r *rig) resetLimits() {
 // write replaces the file (keeping its mode).
 func (r *rig) write(sites string) {
 	r.t.Helper()
-	if err := os.WriteFile(r.path, []byte(hubFile(r.key, r.access, sites)), 0o600); err != nil {
+	if err := os.WriteFile(r.path, []byte(hubFile(r.key, r.access, r.apps, sites)), 0o600); err != nil {
 		r.t.Fatal(err)
 	}
 }

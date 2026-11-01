@@ -22,7 +22,7 @@ import (
 	"github.com/eidonix-ai/eidonix-connector/internal/hub"
 )
 
-var version = "0.6.1"
+var version = "0.6.2"
 
 const usage = `usage:
   eidonix-connect serve [--config PATH]        accept connector sessions and serve the local port
@@ -30,6 +30,7 @@ const usage = `usage:
   eidonix-connect status [--config PATH | --url URL] [--healthz]
                                                show sites and services (--healthz: exit 0 if the hub answers)
   eidonix-connect token                        print a new site token
+  eidonix-connect app-key                      print a new application key
   eidonix-connect server-key                   print a new server-key (its public key to stderr)
   eidonix-connect version`
 
@@ -69,6 +70,13 @@ func execute(args []string, out, errOut io.Writer) error {
 			return err
 		}
 		fmt.Fprintln(out, t)
+		return nil
+	case "app-key":
+		k, err := hub.NewAppKey()
+		if err != nil {
+			return err
+		}
+		fmt.Fprintln(out, k)
 		return nil
 	case "server-key":
 		private, public, err := hub.NewServerKey()

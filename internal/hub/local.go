@@ -18,8 +18,11 @@ import (
 // Application label headers (§4.4 of docs/HUB-DESIGN.md).
 const (
 	HeaderApplication = "X-Eidonix-Application"
-	HeaderFor         = "X-Eidonix-For"
-	HeaderRequestID   = "X-Request-Id"
+	// HeaderApplicationKey carries the application's key once the hub file
+	// has an applications block; the hub never forwards it.
+	HeaderApplicationKey = "X-Eidonix-Application-Key"
+	HeaderFor            = "X-Eidonix-For"
+	HeaderRequestID      = "X-Request-Id"
 )
 
 // hubErrors are the codes the hub itself answers with.
@@ -27,19 +30,20 @@ var hubErrors = map[string]struct {
 	status  int
 	message string
 }{
-	"unknown_site":           {404, "no such site"},
-	"unknown_service":        {404, "the site offers no such service"},
-	"site_offline":           {503, "the site is not connected"},
-	"service_unhealthy":      {503, "the site reports the service unhealthy"},
-	"busy":                   {503, "the service is at its concurrency limit"},
-	"not_allowed":            {403, "this application may not use this service"},
-	"read_only":              {403, "the storage service is read-only"},
-	"invalid_request":        {400, "invalid request"},
-	"not_found":              {404, "not found"},
-	"method_not_allowed":     {405, "method not allowed"},
-	"connector_failed":       {502, "the connector session failed during the request"},
-	"key_server_unavailable": {404, "the site offers no key server"},
-	"response_too_large":     {502, "response exceeds size limit"},
+	"unknown_site":             {404, "no such site"},
+	"unknown_service":          {404, "the site offers no such service"},
+	"site_offline":             {503, "the site is not connected"},
+	"service_unhealthy":        {503, "the site reports the service unhealthy"},
+	"busy":                     {503, "the service is at its concurrency limit"},
+	"application_key_required": {401, "send a valid application key in X-Eidonix-Application-Key"},
+	"not_allowed":              {403, "this application may not use this service"},
+	"read_only":                {403, "the storage service is read-only"},
+	"invalid_request":          {400, "invalid request"},
+	"not_found":                {404, "not found"},
+	"method_not_allowed":       {405, "method not allowed"},
+	"connector_failed":         {502, "the connector session failed during the request"},
+	"key_server_unavailable":   {404, "the site offers no key server"},
+	"response_too_large":       {502, "response exceeds size limit"},
 }
 
 // codeStatus is the HTTP status of a hub or connector code.
@@ -147,6 +151,14 @@ func (h *Hub) serveLocal(w http.ResponseWriter, r *http.Request) {
 		e.Time, e.DurationMS = start.UTC(), time.Since(start).Milliseconds()
 		h.access.Write(e)
 	}()
+	if cfg := h.config(); len(cfg.AppKeys) > 0 {
+		// The authenticated name replaces the self-declared label.
+		name, ok := cfg.ApplicationFor(r.Header.Get(HeaderApplicationKey))
+		if e.Application = name; !ok {
+			c.fail("application_key_required")
+			return
+		}
+	}
 	parts := strings.SplitN(strings.TrimPrefix(path, "/"), "/", 3)
 	if parts[0] == "v1" {
 		c.fail("not_found")

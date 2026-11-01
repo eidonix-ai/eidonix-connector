@@ -1004,3 +1004,127 @@ func TestE2EKeyServer(t *testing.T) {
 		t.Fatalf("no issue line in the hub log: %+v", r.accessEntries())
 	}
 }
+
+// TestE2EApplicationKeys: with an applications block the local API needs an
+// application's key; the key names the application, whatever the label says.
+func TestE2EApplicationKeys(t *testing.T) {
+	up := &echo{}
+	srv := httptest.NewServer(up)
+	defer srv.Close()
+	ws := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if c, err := (&websocket.Upgrader{}).Upgrade(w, r, nil); err == nil {
+			c.Close()
+		}
+	}))
+	defer ws.Close()
+	_, files := s3Service(t, "files", "")
+	apps := "  cletus:\n    key: " + keyCletus + "\n  llm-gateway:\n    key: " + keyGateway + "\n"
+	sites := siteA + "    services:\n      files:\n        applications: [cletus]\n"
+	r := newKeyedRig(t, apps, sites)
+	s := r.connect("site-a", tokenA, httpService("chat", srv.URL, "[POST /v1/*]", "")+httpService("voice", ws.URL, "[WEBSOCKET /v1/stream]", "")+files, nil)
+	for _, svc := range []string{"chat", "voice", "files"} {
+		r.waitService("site-a", svc, true)
+	}
+	with := func(key string, more ...string) http.Header {
+		h := http.Header{HeaderApplicationKey: {key}}
+		for i := 0; i+1 < len(more); i += 2 {
+			h.Set(more[i], more[i+1])
+		}
+		return h
+	}
+
+	// A missing, wrong or look-alike key is 401, whatever label is sent,
+	// for every kind of request and even for unknown paths.
+	for _, path := range []string{"/site-a/chat/v1/x", "/site-a/files/reports/a.txt", "/site-a/.keyserver/list", "/site-z/chat/v1/x", "/v1/other"} {
+		for _, h := range []http.Header{nil, with("eak_CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC", HeaderApplication, "cletus"), {HeaderApplication: {"cletus"}}} {
+			resp, body := r.do("POST", path, strings.NewReader("{}"), h)
+			if code := errorCode(t, resp, body); resp.StatusCode != 401 || code != "application_key_required" || resp.Header.Get(protocol.HeaderError) != code {
+				t.Fatalf("%s: %d %s", path, resp.StatusCode, body)
+			}
+		}
+	}
+	wsURL := "ws" + strings.TrimPrefix(r.local, "http") + "/site-a/voice/v1/stream"
+	if _, resp, err := websocket.DefaultDialer.Dial(wsURL, http.Header{HeaderApplication: {"cletus"}}); err == nil || resp == nil || resp.StatusCode != 401 {
+		t.Fatal("websocket without a key", err, resp)
+	}
+	c, resp, err := websocket.DefaultDialer.Dial(wsURL, with(keyGateway))
+	if err != nil {
+		t.Fatal(err, resp)
+	}
+	c.Close()
+
+	// The key's name replaces a spoofed label; the key goes no further.
+	resp, body := r.do("POST", "/site-a/chat/v1/x", strings.NewReader("hi"), with(keyGateway, HeaderApplication, "cletus"))
+	if resp.StatusCode != 200 || string(body) != "POST /v1/x hi" {
+		t.Fatalf("%d %q", resp.StatusCode, body)
+	}
+	if hd := s.lastHeader(); hd.Application != "llm-gateway" {
+		t.Fatalf("stream header %+v", hd)
+	}
+	for k := range up.last() {
+		if strings.HasPrefix(strings.ToLower(k), "x-eidonix-") {
+			t.Fatalf("service saw %s", k)
+		}
+	}
+
+	// The service's list is checked against the authenticated name:
+	// the spoofed label cannot open storage for llm-gateway.
+	resp, body = r.do("PUT", "/site-a/files/reports/a.txt", strings.NewReader("data"), with(keyGateway, HeaderApplication, "cletus"))
+	if code := errorCode(t, resp, body); resp.StatusCode != 403 || code != "not_allowed" {
+		t.Fatalf("%d %s", resp.StatusCode, body)
+	}
+	if resp, body = r.do("PUT", "/site-a/files/reports/a.txt", strings.NewReader("data"), with(keyCletus)); resp.StatusCode >= 300 {
+		t.Fatalf("%d %s", resp.StatusCode, body)
+	}
+	if resp, body = r.do("GET", "/site-a/files/reports/a.txt", nil, with(keyCletus)); resp.StatusCode != 200 || string(body) != "data" {
+		t.Fatalf("%d %s", resp.StatusCode, body)
+	}
+	if hd := s.lastHeader(); hd.Kind != "storage" || hd.Application != "cletus" {
+		t.Fatalf("%+v", hd)
+	}
+	// The key server is behind the key too (this site offers none).
+	resp, body = r.do("POST", "/site-a/.keyserver/list", strings.NewReader("{}"), with(keyCletus))
+	if code := errorCode(t, resp, body); code != "key_server_unavailable" {
+		t.Fatalf("%d %s", resp.StatusCode, body)
+	}
+
+	// Metadata stays open.
+	for _, path := range []string{"/healthz", "/v1/catalog", "/v1/catalog/site-a"} {
+		if resp, _ := r.do("GET", path, nil, nil); resp.StatusCode != 200 {
+			t.Fatalf("%s: %d", path, resp.StatusCode)
+		}
+	}
+
+	// The access log names the application and never holds a key.
+	waitFor(t, "access log", func() bool { return len(r.accessEntries()) >= 12 })
+	raw, _ := os.ReadFile(r.access)
+	if strings.Contains(string(raw), "eak_") {
+		t.Fatalf("access log holds a key:\n%s", raw)
+	}
+	for _, e := range r.accessEntries() {
+		if e.Error == "application_key_required" && e.Application != "" || e.Status == 200 && e.Application == "" {
+			t.Fatalf("%+v", e)
+		}
+	}
+
+	// A reload applies new keys without dropping the session.
+	r.apps = "  llm-gateway:\n    key: " + keyGateway + "\n"
+	r.write(sites)
+	waitFor(t, "cletus key withdrawn", func() bool {
+		resp, _ := r.do("GET", "/site-a/files/reports/a.txt", nil, with(keyCletus))
+		return resp.StatusCode == 401
+	})
+	if r.sessions("site-a") != 1 {
+		t.Fatal("the reload dropped the session")
+	}
+	if resp, _ := r.do("POST", "/site-a/chat/v1/x", nil, with(keyGateway)); resp.StatusCode != 200 {
+		t.Fatal(resp.StatusCode)
+	}
+	// Removing the block opens the port again.
+	r.apps = ""
+	r.write(sites)
+	waitFor(t, "port open", func() bool {
+		resp, _ := r.do("POST", "/site-a/chat/v1/x", nil, nil)
+		return resp.StatusCode == 200
+	})
+}
