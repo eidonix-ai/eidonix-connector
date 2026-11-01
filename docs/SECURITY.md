@@ -62,8 +62,13 @@ and protects:
   who reads the state file reads every `k_conn` and every unclaimed key, so
   it is `0600`, gated like the configuration file, and belongs in the same
   protected backups.
-- **Eidonix never sees a key.** It receives the hash of the bearer derived
-  from the key (`ovh_hash`) and a preview of the last four characters. A
+- **Eidonix never receives a key from the connector.** It receives the hash
+  of the bearer derived from the key (`ovh_hash`), an argon2id hash of the
+  key (`key_hash`) and a preview of the last four characters. `key_hash`
+  exists so application releases that still present the raw key can sign
+  in; a hash does not reveal a key of this length. Until the organization
+  stops accepting raw keys, such releases do send the raw key to Eidonix with
+  each request, so stop accepting raw keys once every user has updated. A
   claim reaches the person through e-mail from this connector; Eidonix only
   relays the claim request and the encrypted answer, which only the holder
   of the claim secret can open.

@@ -206,12 +206,16 @@ func (s *Server) mint(st *state, q *request, reissue bool) (map[string]any, erro
 		e = &entry{Status: "active", Created: s.now().UTC().Format(time.RFC3339), Email: q.Email, Name: q.Name}
 		st.Keys[q.UID] = e
 	}
+	hash, err := keyHash(key)
+	if err != nil {
+		return nil, err
+	}
 	e.KConn = connectorKey(secret, s.Site)
 	st.dirty = true
 	if err = s.mail.Send(e.Email, "Your Cletus key", s.claimMail(e.Name, id, cs, expires)); err != nil {
 		return nil, err
 	}
-	return map[string]any{"ok": true, "ovh_hash": ovhHash(bearer(secret)), "key_preview": "sk-…" + key[len(key)-4:], "claim_expires": expires.Format(time.RFC3339)}, nil
+	return map[string]any{"ok": true, "ovh_hash": ovhHash(bearer(secret)), "key_hash": hash, "key_preview": "sk-…" + key[len(key)-4:], "claim_expires": expires.Format(time.RFC3339)}, nil
 }
 
 func (s *Server) claimMail(name, id, secret string, expires time.Time) string {
@@ -228,6 +232,8 @@ Your Cletus key is ready. On the computer or phone where you use Cletus, open th
 Or, in Cletus, choose "Paste a claim code" and enter:
 
 %s.%s.%s
+
+If the link does not open Cletus, or Cletus has no "Paste a claim code" option, update Cletus from your usual download page first.
 
 The link and the code work once and expire at %s. Anyone who has them can claim your key, so do not forward this message.
 `, greeting, s.cfg.Link, s.Site, id, secret, s.Site, id, secret, expires.Format("2006-01-02 15:04 UTC"))

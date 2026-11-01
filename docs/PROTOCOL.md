@@ -129,7 +129,7 @@ Key-server answers have no `v` field and always end the stream; a refusal is `ok
 
 | Op | Request | Answer |
 | --- | --- | --- |
-| `issue` | `uid`, `email`, `name`, `org_slug` | `ovh_hash`, `key_preview`, `claim_expires` |
+| `issue` | `uid`, `email`, `name`, `org_slug` | `ovh_hash`, `key_hash`, `key_preview`, `claim_expires` |
 | `reissue` | `uid` | as `issue` |
 | `import` | `uid`, `email`, `name`, `k_conn` | none |
 | `revoke`, `restore` | `uid` | none |
@@ -145,6 +145,7 @@ Key-server answers have no `v` field and always end the stream; a refusal is `ok
 | key | `sk-` and 32 characters of `A-Za-z0-9` from a cryptographic random source |
 | bearer | `ck1-` and unpadded base64url of `HMAC-SHA256(secret, "cletus-ovh-v1")` |
 | `ovh_hash` | lowercase hex of `SHA-256(bearer)` |
+| `key_hash` | argon2id of the full key, `$argon2id$v=19$m=65536,t=3,p=4$<salt>$<hash>` (unpadded standard base64), so that application releases which still present the raw key can sign in until the organization stops accepting raw keys |
 | `k_conn` | lowercase hex of `HMAC-SHA256(secret, "cletus-connector-v1|" + site)` |
 | `key_preview` | `sk-…` and the key's last four characters |
 

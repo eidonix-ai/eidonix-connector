@@ -5,15 +5,19 @@ import (
 	"crypto/cipher"
 	"crypto/hkdf"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"golang.org/x/crypto/argon2"
 
 	"github.com/eidonix-ai/eidonix-connector/internal/config"
 )
@@ -162,6 +166,12 @@ func TestIssueThenClaimDeliversTheKeyOnce(t *testing.T) {
 	}
 	if ans["ovh_hash"] != ovhHash(bearer(body)) || ans["key_preview"] != "sk-…"+key[len(key)-4:] {
 		t.Fatalf("answer %v", ans)
+	}
+	if h, _ := ans["key_hash"].(string); !argon2Matches(t, h, key) {
+		t.Fatalf("key_hash %q does not verify the key", h)
+	}
+	if !strings.Contains(r.mail.sent[0].body, "update Cletus") {
+		t.Fatal("mail lacks the update hint")
 	}
 	st := readState(t, r.file)
 	if e := st.Keys["u1"]; e == nil || e.KConn != connectorKey(body, "site-a") || e.Status != "active" || e.Email != "pat@example.com" || e.Name != "Pat Doe" || e.Created == "" {
@@ -356,4 +366,26 @@ func TestStateFileGate(t *testing.T) {
 		t.Fatal(err)
 	}
 	r.refused("list", nil, "unavailable")
+}
+
+// argon2Matches verifies key against a "$argon2id$v=19$m=…,t=…,p=…$salt$hash"
+// string the way the Cletus dataproxy does.
+func argon2Matches(t *testing.T, encoded, key string) bool {
+	t.Helper()
+	parts := strings.Split(encoded, "$")
+	if len(parts) != 6 || parts[1] != "argon2id" || parts[2] != "v=19" {
+		return false
+	}
+	var m uint32
+	var tm uint32
+	var p uint8
+	if _, err := fmt.Sscanf(parts[3], "m=%d,t=%d,p=%d", &m, &tm, &p); err != nil {
+		return false
+	}
+	salt, err1 := base64.RawStdEncoding.DecodeString(parts[4])
+	want, err2 := base64.RawStdEncoding.DecodeString(parts[5])
+	if err1 != nil || err2 != nil {
+		return false
+	}
+	return subtle.ConstantTimeCompare(argon2.IDKey([]byte(key), salt, tm, m, p, uint32(len(want))), want) == 1
 }

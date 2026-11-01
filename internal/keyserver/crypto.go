@@ -9,7 +9,10 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"fmt"
 	"math/big"
+
+	"golang.org/x/crypto/argon2"
 )
 
 // The derivations below are shared with the Cletus app and dataproxy, which
@@ -95,4 +98,18 @@ func seal(secret []byte, plaintext string) (nonce, box string, err error) {
 		return "", "", err
 	}
 	return base64.StdEncoding.EncodeToString(n), base64.StdEncoding.EncodeToString(g.Seal(nil, n, []byte(plaintext), nil)), nil
+}
+
+// keyHash is the argon2id hash the Cletus dataproxy stores so that apps
+// which still present the raw key (older releases) can sign in until the
+// organization stops accepting raw keys. Same parameters and encoding as the
+// dataproxy's own key hashes, over the full key.
+func keyHash(key string) (string, error) {
+	salt := make([]byte, 16)
+	if _, err := rand.Read(salt); err != nil {
+		return "", err
+	}
+	h := argon2.IDKey([]byte(key), salt, 3, 64*1024, 4, 32)
+	return fmt.Sprintf("$argon2id$v=19$m=%d,t=%d,p=%d$%s$%s", 64*1024, 3, 4,
+		base64.RawStdEncoding.EncodeToString(salt), base64.RawStdEncoding.EncodeToString(h)), nil
 }
