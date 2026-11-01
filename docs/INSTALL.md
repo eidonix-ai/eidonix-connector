@@ -38,19 +38,19 @@ then verifies every package itself:
 
 ```sh
 cp eidonix-connector.rsa.pub /etc/apk/keys/
-apk add ./eidonix-connector_0.5.2_amd64.apk
+apk add ./eidonix-connector_0.6.0_amd64.apk
 ```
 
 Debian / Ubuntu:
 
 ```sh
-sudo apt install ./eidonix-connector_0.5.2_amd64.deb
+sudo apt install ./eidonix-connector_0.6.0_amd64.deb
 ```
 
 Fedora / RHEL / Rocky / Alma:
 
 ```sh
-sudo dnf install ./eidonix-connector_0.5.2_amd64.rpm
+sudo dnf install ./eidonix-connector_0.6.0_amd64.rpm
 ```
 
 The `.deb` and `.rpm` carry no package-manager signature; their integrity

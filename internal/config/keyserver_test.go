@@ -53,6 +53,7 @@ func TestKeyServerErrors(t *testing.T) {
 		{"missing username", "    username: keys@example.com\n", "", "username is required"},
 		{"from with a name", "from: keys@example.com", "from: Keys <keys@example.com>", "from must be an e-mail address"},
 		{"unknown smtp setting", "    from:", "    tls: true\n    from:", `unknown setting "tls" in key-server smtp`},
+		{"from-name with angle brackets", "    from: keys@example.com\n", "    from: keys@example.com\n    from-name: Keys <x>\n", "from-name must be a short display name"},
 		{"unknown setting", "  smtp:", "  port: 1\n  smtp:", `unknown setting "port" in key-server`},
 		{"relative state file", "  smtp:", "  state-file: keys.json\n  smtp:", "state-file must be an absolute path"},
 		{"long claim ttl", "  smtp:", "  claim-ttl: 48h\n  smtp:", "claim-ttl must be a duration"},
@@ -117,5 +118,15 @@ func TestRedactKeepsTheKeyServerBlock(t *testing.T) {
 	}
 	if _, err = Parse([]byte(strings.ReplaceAll(string(out), Redacted, testToken))); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestKeyServerFromName(t *testing.T) {
+	c, err := parse(t, strings.Replace(goodKeyServer, "    from: keys@example.com\n", "    from: keys@example.com\n    from-name: Cletus\n", 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.KeyServer.SMTP.FromName != "Cletus" {
+		t.Fatalf("from-name = %q", c.KeyServer.SMTP.FromName)
 	}
 }

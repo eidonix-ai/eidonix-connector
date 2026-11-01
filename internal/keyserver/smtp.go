@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"fmt"
 	"net"
+	"net/mail"
 	"net/smtp"
 	"strings"
 	"sync"
@@ -98,7 +99,7 @@ func (m *SMTP) Send(to, subject, body string) error {
 		return err
 	}
 	msg := fmt.Sprintf("From: %s\r\nTo: %s\r\nSubject: %s\r\nDate: %s\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n%s",
-		m.cfg.From, to, subject, time.Now().UTC().Format(time.RFC1123Z), strings.ReplaceAll(body, "\n", "\r\n"))
+		fromHeader(m.cfg.From, m.cfg.FromName), to, subject, time.Now().UTC().Format(time.RFC1123Z), strings.ReplaceAll(body, "\n", "\r\n"))
 	if _, err = w.Write([]byte(msg)); err != nil {
 		return err
 	}
@@ -106,4 +107,13 @@ func (m *SMTP) Send(to, subject, body string) error {
 		return err
 	}
 	return c.Quit()
+}
+
+// fromHeader is the From header: the bare address, or the address with its
+// display name, quoted or encoded as RFC 5322 and 2047 require.
+func fromHeader(addr, name string) string {
+	if name == "" {
+		return addr
+	}
+	return (&mail.Address{Name: name, Address: addr}).String()
 }

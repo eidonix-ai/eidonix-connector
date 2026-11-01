@@ -1,6 +1,6 @@
 # Implementation status
 
-Module `github.com/eidonix-ai/eidonix-connector`, Apache-2.0. Version 0.5.2.
+Module `github.com/eidonix-ai/eidonix-connector`, Apache-2.0. Version 0.6.0.
 
 ## Implemented
 
@@ -36,6 +36,14 @@ Module `github.com/eidonix-ai/eidonix-connector`, Apache-2.0. Version 0.5.2.
 - Signed releases (from 0.5.2): `SHA256SUMS` signed with minisign, `.apk`
   packages signed with an apk RSA key, a CycloneDX SBOM per binary; public
   keys in [`keys/`](../keys) ([verifying](INSTALL.md#verify-the-release)).
+- The key server (from 0.6.0, `internal/keyserver`, opt-in with a
+  `key-server:` block): the connector mints an organization's account keys,
+  keeps for each the secret it shares with the key's owner, e-mails one-time
+  claim links through an SMTP login, hands a claimed key over encrypted to
+  the claim secret, and revokes, restores, imports and reissues keys on the
+  application's request; `keys` CLI for the site owner; the hub's
+  `/<site>/.keyserver/<op>` endpoint and `key_server` catalog flag
+  ([PROTOCOL.md](PROTOCOL.md), [SECURITY.md](SECURITY.md)).
 - `cmd/test-gateway`, a loopback development peer speaking v3 for trying a
   connector without a hub. It is not used in production.
 

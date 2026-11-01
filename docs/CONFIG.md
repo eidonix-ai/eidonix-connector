@@ -241,7 +241,8 @@ key-server:
     address: mail.example.com:465
     username: keys@example.com
     password-file: /etc/eidonix-connector/smtp.pass
-    from: keys@example.com
+    from: no-reply@example.com
+    # from-name: Cletus
   # claim-ttl: 24h
   # state-file: /var/lib/eidonix-connector/keys.json
   # link: cletus://claim
@@ -252,6 +253,7 @@ key-server:
 | `allowed-domains` | Required. E-mail domains (lowercase, such as `example.com`; a subdomain is a different domain) that may be issued a key. Others get `domain_not_allowed`. |
 | `smtp.address` | Required. `host:465` connects with TLS from the start; `host:587` uses STARTTLS, which is required. The certificate must verify against the system's roots. The connector may reach only this address. |
 | `smtp.username`, `smtp.from` | Required. The login, and the address mail is sent as (a bare address). |
+| `smtp.from-name` | Optional display name on the From header, such as `Cletus`; at most 64 characters, no `<`, `>` or quotes. |
 | `smtp.password-file` | Required. Absolute path of a file holding the password alone. It must pass the same gate as the configuration file (owned by root or the connector's user, no access for others, no group write: `0640 root:eidonix-connector` or `0600`). `check` and `run` refuse it otherwise; it is read again for each mail, so a new password needs no reload. |
 | `claim-ttl` | How long a claim works. Default and at most `24h`. |
 | `state-file` | Absolute path of the state file. Default `/var/lib/eidonix-connector/keys.json`; the connector writes it `0600`, atomically, and it must pass the same gate when it exists. |

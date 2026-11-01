@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.6.0 (unreleased)
+## 0.6.0 (2026-11-01)
 
 ### Connector
 
@@ -22,6 +22,9 @@ ignore it and older connectors never receive the stream.
 site that announced `key-server/1`, and the catalog shows `"key_server":
 true` for it ([HUB.md](docs/HUB.md#key-server)). The Go `client` package's
 `Site` has the `KeyServer` field.
+
+**Claim mail sender name.** `smtp.from-name` (optional) sets the display name on
+claim e-mails, for example `Cletus <no-reply@example.com>`.
 
 ## 0.5.2 (2026-10-28)
 

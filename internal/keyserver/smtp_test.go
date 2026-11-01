@@ -144,3 +144,12 @@ func TestSMTPRefusesAnUntrustedCertificateAndALooseSecretFile(t *testing.T) {
 		t.Fatalf("loose password file: %v", err)
 	}
 }
+
+func TestFromHeader(t *testing.T) {
+	if got := fromHeader("no-reply@example.com", ""); got != "no-reply@example.com" {
+		t.Fatalf("bare = %q", got)
+	}
+	if got := fromHeader("no-reply@example.com", "Cletus"); got != `"Cletus" <no-reply@example.com>` {
+		t.Fatalf("named = %q", got)
+	}
+}

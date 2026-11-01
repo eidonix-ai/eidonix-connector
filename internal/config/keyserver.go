@@ -23,7 +23,8 @@ const (
 
 var (
 	keyServerFields = []string{"allowed-domains", "claim-ttl", "state-file", "link", "smtp"}
-	smtpFields      = []string{"address", "username", "password-file", "from"}
+	smtpFields      = []string{"address", "username", "password-file", "from", "from-name"}
+	smtpRequired    = []string{"address", "username", "password-file", "from"}
 	domainPattern   = regexp.MustCompile(`^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$`)
 	linkPattern     = regexp.MustCompile(`^[a-z][a-z0-9+.-]*://[a-z0-9.-]+$`)
 )
@@ -46,6 +47,8 @@ type SMTP struct {
 	Username     string
 	PasswordFile string
 	From         string
+	// FromName is the optional display name on the From header ("Cletus").
+	FromName string
 }
 
 func parseKeyServer(n *yaml.Node) (*KeyServer, error) {
@@ -108,7 +111,7 @@ func parseSMTP(n *yaml.Node) (SMTP, error) {
 	if err != nil {
 		return s, err
 	}
-	for _, req := range smtpFields {
+	for _, req := range smtpRequired {
 		if f[req] == nil {
 			return s, at(n, ctx, "%s is required", req)
 		}
@@ -133,6 +136,14 @@ func parseSMTP(n *yaml.Node) (SMTP, error) {
 	}
 	if a, e := mail.ParseAddress(s.From); e != nil || a.Address != s.From {
 		return s, at(f["from"], ctx, "from must be an e-mail address like keys@example.com")
+	}
+	if f["from-name"] != nil {
+		if s.FromName, err = line(f["from-name"], ctx, "from-name"); err != nil {
+			return s, err
+		}
+		if len(s.FromName) > 64 || strings.ContainsAny(s.FromName, "\r\n<>\"") {
+			return s, at(f["from-name"], ctx, "from-name must be a short display name such as Cletus")
+		}
 	}
 	return s, nil
 }

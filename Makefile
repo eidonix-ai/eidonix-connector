@@ -1,4 +1,4 @@
-VERSION ?= 0.5.2
+VERSION ?= 0.6.0
 export VERSION
 
 .PHONY: all test build package sbom sign clean
